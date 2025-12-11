@@ -49,17 +49,9 @@ From just **20 used Android phones** purchased on eBay - all of which had been f
 - A completed loan application
 - The identities of four previous owners
 
-[Source](https://press.avast.com/avast-demonstrates-risk-of-selling-used-smartphones)
+**How they did it:** Using standard forensic tools - FTK Imager for disk imaging, `dd` for raw disk cloning, and Scalpel for data carving - researchers extracted data from "unallocated space" that standard deletion doesn't touch. They recovered Facebook chat logs, GPS coordinates, and intimate photos that previous owners assumed were gone.
 
-### Avast Pawn Shop Follow-Up
-
-In a follow-up study examining phones from pawn shops - where owners had been *assured* their devices were wiped clean - Avast found that **50% of factory-reset phones still contained personal data**, often due to outdated Android versions with improperly functioning reset features.
-
-[Source](https://press.avast.com/selling-your-smartphone-could-mean-selling-your-identity)
-
-### University of Cambridge
-
-Found that even after factory resets, **sensitive data fragments remained recoverable** from a significant portion of second-hand devices.
+[Source: How Avast recovered 'erased' data from used Android phones](https://blog.avast.com/2014/07/09/android-foreniscs-pt-2-how-we-recovered-erased-data/)
 
 ---
 
