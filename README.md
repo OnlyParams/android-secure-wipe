@@ -398,6 +398,34 @@ This is normal - writing random data to flash storage takes time.
 
 ---
 
+## Desktop App (SecureWipe Wizard)
+
+**Coming Soon:** A user-friendly desktop application for those who prefer a graphical interface.
+
+### Features
+
+- Step-by-step wizard interface
+- Automatic device detection
+- Quick Wipe and Full Wipe modes
+- Double Factory Reset option for maximum security
+- Progress tracking with real-time logs
+- Cross-platform: Linux, Windows, macOS
+
+### Build from Source
+
+```bash
+cd desktop-app
+npm install
+npm run tauri dev    # Development mode
+npm run tauri build  # Production build
+```
+
+**Requirements:** Node.js 20+, Rust 1.70+, ADB installed
+
+Built with [Tauri](https://tauri.app) + Svelte. Branded: **OnlyParams, a division of Ciphracore Systems LLC**.
+
+---
+
 ## Contributing
 
 Found an issue or have a suggestion? Open an issue or submit a PR.
@@ -408,4 +436,4 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 
-*Created by [OnlyParams](https://onlyparams.dev) - Practical security for the reasonably paranoid.*
+*Created by [OnlyParams](https://onlyparams.dev), a division of Ciphracore Systems LLC - Practical security for the reasonably paranoid.*

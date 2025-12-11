@@ -13,6 +13,7 @@ docs/BUSINESS_PLAN.md
 # ----- TAURI / RUST BUILD ARTIFACTS -----
 # Desktop app build outputs
 desktop-app/src-tauri/target/
+desktop-app/src-tauri/gen/
 desktop-app/node_modules/
 desktop-app/dist/
 desktop-app/.svelte-kit/
@@ -49,6 +50,9 @@ Thumbs.db
 *.key
 credentials.json
 secrets.json
+
+# ----- CLAUDE CODE TEMP FILES -----
+claude-edited.json
 
 # ----- TESTING / COVERAGE -----
 coverage/
