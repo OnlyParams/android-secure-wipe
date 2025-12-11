@@ -1,14 +1,20 @@
 // SecureWipe Wizard - Tauri Backend
 // OnlyParams, a division of Ciphracore Systems LLC
 //
+// Phase 2: Enhanced backend with streaming progress, robust parsing, and tests
+//
 // This module exposes Tauri commands for:
 // - ADB device detection and management
-// - Secure wipe execution (quick/full modes)
+// - Secure wipe execution (quick/full modes) with progress streaming
 // - Factory reset triggering
-// - Progress streaming to frontend
+// - Device-specific instructions
 
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+// Note: Arc, AtomicBool, Ordering reserved for future cancellation support
+// use std::sync::atomic::{AtomicBool, Ordering};
+// use std::sync::Arc;
 use tauri::Emitter;
 
 // ============================================================================
@@ -21,13 +27,16 @@ pub struct DeviceInfo {
     pub id: String,
     pub model: String,
     pub brand: String,
+    pub android_version: String,
 }
 
 /// Storage information from device
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageInfo {
     pub total_mb: u64,
+    pub used_mb: u64,
     pub available_mb: u64,
+    pub percent_used: u8,
 }
 
 /// Progress event emitted during wipe operations
@@ -36,23 +45,176 @@ pub struct WipeProgress {
     pub pass: u32,
     pub total_passes: u32,
     pub percent: f32,
+    pub bytes_written: u64,
     pub message: String,
+    pub phase: String, // "writing", "verifying", "cleanup"
 }
 
 /// Wipe configuration from frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WipeConfig {
-    pub mode: String,        // "quick" or "full"
-    pub passes: u32,         // Number of passes (1-20)
-    pub size_mb: Option<u32>, // Chunk size for quick mode
-    pub double_reset: bool,  // Enable double factory reset
+    pub mode: String,         // "quick" or "full"
+    pub passes: u32,          // Number of passes (1-20)
+    pub size_mb: Option<u32>, // Chunk size for quick mode (64-10240)
+    pub double_reset: bool,   // Enable double factory reset
+}
+
+/// Result of an ADB command check
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdbStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub devices_connected: u32,
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Validate and sanitize device ID to prevent command injection
+fn sanitize_device_id(device_id: &str) -> Result<String, String> {
+    // Device IDs should only contain alphanumeric, colons, and dots
+    // Examples: "emulator-5554", "192.168.1.1:5555", "RFXXXXXXXX"
+    let valid = device_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == ':' || c == '.' || c == '-' || c == '_');
+
+    if !valid || device_id.is_empty() || device_id.len() > 64 {
+        return Err("Invalid device ID format".to_string());
+    }
+
+    Ok(device_id.to_string())
+}
+
+/// Parse ADB devices output into a list of device IDs
+fn parse_adb_devices(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .skip(1) // Skip "List of devices attached"
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && parts[1] == "device" {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Parse df output to get storage info
+fn parse_df_output(output: &str) -> Result<StorageInfo, String> {
+    let lines: Vec<&str> = output.lines().collect();
+    let data_line = lines.get(1).ok_or("No data in df output")?;
+    let parts: Vec<&str> = data_line.split_whitespace().collect();
+
+    if parts.len() < 5 {
+        return Err("Unexpected df output format".to_string());
+    }
+
+    let total_mb: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let used_mb: u64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let available_mb: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    // Parse percentage (remove % sign)
+    let percent_str = parts.get(4).unwrap_or(&"0%");
+    let percent_used: u8 = percent_str
+        .trim_end_matches('%')
+        .parse()
+        .unwrap_or(0);
+
+    Ok(StorageInfo {
+        total_mb,
+        used_mb,
+        available_mb,
+        percent_used,
+    })
+}
+
+/// Parse progress from script output
+/// Expected format: "PROGRESS: Pass 1/3 - 512MB (50%)"
+fn parse_progress_line(line: &str, total_passes: u32) -> Option<WipeProgress> {
+    if !line.contains("PROGRESS:") && !line.contains("Pass") {
+        return None;
+    }
+
+    // Try to extract pass number
+    let pass = if let Some(pass_str) = line.split("Pass").nth(1) {
+        pass_str
+            .trim()
+            .split(|c: char| !c.is_numeric())
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1)
+    } else {
+        1
+    };
+
+    // Try to extract percentage
+    let percent = if let Some(pct_idx) = line.find('%') {
+        let start = line[..pct_idx]
+            .rfind(|c: char| !c.is_numeric() && c != '.')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        line[start..pct_idx].parse().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+
+    Some(WipeProgress {
+        pass,
+        total_passes,
+        percent,
+        bytes_written: 0, // Would need more parsing
+        message: line.to_string(),
+        phase: "writing".to_string(),
+    })
 }
 
 // ============================================================================
 // Tauri Commands
 // ============================================================================
 
-/// Check if ADB is available and detect connected devices
+/// Check if ADB is installed and get version info
+#[tauri::command]
+async fn check_adb_status() -> Result<AdbStatus, String> {
+    // Check if ADB is installed
+    let version_output = Command::new("adb")
+        .arg("version")
+        .output();
+
+    match version_output {
+        Ok(output) if output.status.success() => {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            let version = version_str
+                .lines()
+                .next()
+                .map(|s| s.to_string());
+
+            // Count connected devices
+            let devices_output = Command::new("adb")
+                .arg("devices")
+                .output()
+                .map_err(|e| format!("Failed to list devices: {}", e))?;
+
+            let devices_str = String::from_utf8_lossy(&devices_output.stdout);
+            let devices = parse_adb_devices(&devices_str);
+
+            Ok(AdbStatus {
+                installed: true,
+                version,
+                devices_connected: devices.len() as u32,
+            })
+        }
+        _ => Ok(AdbStatus {
+            installed: false,
+            version: None,
+            devices_connected: 0,
+        }),
+    }
+}
+
+/// Check for connected devices and return device info
 #[tauri::command]
 async fn check_adb() -> Result<DeviceInfo, String> {
     // Run `adb devices` to list connected devices
@@ -61,189 +223,314 @@ async fn check_adb() -> Result<DeviceInfo, String> {
         .output()
         .map_err(|e| format!("Failed to run ADB: {}. Is ADB installed?", e))?;
 
+    if !output.status.success() {
+        return Err("ADB command failed. Please check ADB installation.".to_string());
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let devices = parse_adb_devices(&stdout);
 
-    // Parse device ID from output (skip header line)
-    let lines: Vec<&str> = stdout.lines().collect();
-    let device_line = lines
-        .iter()
-        .skip(1) // Skip "List of devices attached"
-        .find(|line| line.contains("device") && !line.contains("offline"))
-        .ok_or("No device connected. Please connect your Android device and enable USB debugging.")?;
+    if devices.is_empty() {
+        return Err(
+            "No device connected. Please:\n\
+             1. Connect your Android device via USB\n\
+             2. Enable USB Debugging in Developer Options\n\
+             3. Authorize this computer on your phone"
+                .to_string(),
+        );
+    }
 
-    let device_id = device_line
-        .split_whitespace()
-        .next()
-        .ok_or("Failed to parse device ID")?
-        .to_string();
+    // Use first connected device
+    let device_id = &devices[0].0;
 
-    // Get device model
-    let model_output = Command::new("adb")
-        .args(["-s", &device_id, "shell", "getprop", "ro.product.model"])
-        .output()
-        .map_err(|e| format!("Failed to get device model: {}", e))?;
-    let model = String::from_utf8_lossy(&model_output.stdout).trim().to_string();
+    // Get device properties
+    let get_prop = |prop: &str| -> String {
+        Command::new("adb")
+            .args(["-s", device_id, "shell", "getprop", prop])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
 
-    // Get device brand
-    let brand_output = Command::new("adb")
-        .args(["-s", &device_id, "shell", "getprop", "ro.product.brand"])
-        .output()
-        .map_err(|e| format!("Failed to get device brand: {}", e))?;
-    let brand = String::from_utf8_lossy(&brand_output.stdout).trim().to_string();
+    let model = get_prop("ro.product.model");
+    let brand = get_prop("ro.product.brand");
+    let android_version = get_prop("ro.build.version.release");
+
+    if model.is_empty() {
+        return Err("Connected device not responding. Please unlock your phone and try again.".to_string());
+    }
 
     Ok(DeviceInfo {
-        id: device_id,
+        id: device_id.clone(),
         model,
         brand,
+        android_version,
     })
 }
 
 /// Get storage information from connected device
 #[tauri::command]
 async fn get_storage_info(device_id: String) -> Result<StorageInfo, String> {
-    // Run df command on device
+    let device_id = sanitize_device_id(&device_id)?;
+
     let output = Command::new("adb")
         .args(["-s", &device_id, "shell", "df", "-m", "/sdcard"])
         .output()
         .map_err(|e| format!("Failed to get storage info: {}", e))?;
 
+    if !output.status.success() {
+        return Err("Failed to read storage info. Device may be locked.".to_string());
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse df output (second line contains the data)
-    let lines: Vec<&str> = stdout.lines().collect();
-    let data_line = lines
-        .get(1)
-        .ok_or("Failed to parse storage info")?;
-
-    let parts: Vec<&str> = data_line.split_whitespace().collect();
-
-    // df -m output: Filesystem 1M-blocks Used Available Use% Mounted
-    let total_mb: u64 = parts.get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let available_mb: u64 = parts.get(3)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    Ok(StorageInfo {
-        total_mb,
-        available_mb,
-    })
+    parse_df_output(&stdout)
 }
 
-/// Execute secure wipe operation
+/// Execute secure wipe operation with streaming progress
 #[tauri::command]
 async fn run_wipe(
     window: tauri::Window,
     device_id: String,
     config: WipeConfig,
 ) -> Result<String, String> {
+    let device_id = sanitize_device_id(&device_id)?;
+
     // Validate inputs
     let passes = config.passes.clamp(1, 20);
     let size_mb = config.size_mb.map(|s| s.clamp(64, 10240)).unwrap_or(1024);
 
-    // Determine script to run
+    // Validate mode
+    if config.mode != "quick" && config.mode != "full" {
+        return Err("Invalid wipe mode. Must be 'quick' or 'full'.".to_string());
+    }
+
     let script = if config.mode == "quick" {
         "quick_wipe.sh"
     } else {
         "full_wipe.sh"
     };
 
-    // Get the scripts directory path
-    let scripts_dir = std::env::current_exe()
-        .map_err(|e| format!("Failed to get exe path: {}", e))?
-        .parent()
-        .ok_or("Failed to get parent dir")?
-        .join("scripts");
+    // Get the scripts directory path - check multiple locations
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))?;
+
+    let possible_paths = vec![
+        exe_path.parent().unwrap().join("scripts"),
+        exe_path.parent().unwrap().join("../Resources/scripts"),
+        std::path::PathBuf::from("scripts"),
+    ];
+
+    let scripts_dir = possible_paths
+        .into_iter()
+        .find(|p| p.join(script).exists())
+        .ok_or("Scripts directory not found. Please reinstall the application.")?;
+
+    // Emit start event
+    let _ = window.emit(
+        "wipe-progress",
+        WipeProgress {
+            pass: 0,
+            total_passes: passes,
+            percent: 0.0,
+            bytes_written: 0,
+            message: format!("Starting {} wipe with {} passes...", config.mode, passes),
+            phase: "starting".to_string(),
+        },
+    );
 
     // Build command with sanitized arguments
     let mut cmd = Command::new("bash");
     cmd.current_dir(&scripts_dir)
         .arg(script)
-        .arg("-d").arg(&device_id)
-        .arg("-p").arg(passes.to_string())
-        .arg("-y"); // Auto-confirm
+        .arg("-d")
+        .arg(&device_id)
+        .arg("-p")
+        .arg(passes.to_string())
+        .arg("-y") // Auto-confirm
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     if config.mode == "quick" {
         cmd.arg("-s").arg(size_mb.to_string());
     }
 
-    // Clear environment for security (no passthrough)
+    // Clear environment for security
     cmd.env_clear();
+    // But we need PATH for the script to find adb
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
 
-    // Execute and capture output
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute wipe script: {}", e))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start wipe: {}", e))?;
+
+    // Stream stdout for progress
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        let window_clone = window.clone();
+
+        for line in reader.lines().map_while(Result::ok) {
+            // Parse progress from line
+            if let Some(progress) = parse_progress_line(&line, passes) {
+                let _ = window_clone.emit("wipe-progress", progress);
+            }
+        }
+    }
+
+    // Wait for completion
+    let status = child
+        .wait()
+        .map_err(|e| format!("Wipe process error: {}", e))?;
 
     // Emit completion event
-    let _ = window.emit("wipe-complete", serde_json::json!({
-        "success": output.status.success(),
-        "mode": config.mode,
-        "passes": passes
-    }));
+    let _ = window.emit(
+        "wipe-complete",
+        serde_json::json!({
+            "success": status.success(),
+            "mode": config.mode,
+            "passes": passes
+        }),
+    );
 
-    if output.status.success() {
-        Ok("Wipe completed successfully".to_string())
+    if status.success() {
+        Ok(format!(
+            "Wipe completed successfully! {} passes of {} mode.",
+            passes, config.mode
+        ))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Wipe failed: {}", stderr))
+        Err("Wipe failed. Check device connection and try again.".to_string())
     }
 }
 
-/// Trigger factory reset via ADB
+/// Trigger factory reset via ADB (opens settings screen)
 #[tauri::command]
 async fn run_factory_reset(device_id: String, is_final: bool) -> Result<String, String> {
+    let device_id = sanitize_device_id(&device_id)?;
+
     // Safety: This opens the factory reset screen; user must confirm on device
     let output = Command::new("adb")
         .args([
-            "-s", &device_id,
-            "shell", "am", "start",
-            "-a", "android.settings.MASTER_CLEAR"
+            "-s",
+            &device_id,
+            "shell",
+            "am",
+            "start",
+            "-a",
+            "android.settings.MASTER_CLEAR",
         ])
         .output()
         .map_err(|e| format!("Failed to trigger factory reset: {}", e))?;
 
     if output.status.success() {
         let phase = if is_final { "final" } else { "initial" };
-        Ok(format!("Factory reset screen opened ({}). Please confirm on device.", phase))
+        Ok(format!(
+            "Factory reset screen opened ({} reset).\n\
+             Please confirm the reset on your device screen.\n\
+             Note: Some devices require PIN verification.",
+            phase
+        ))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Failed to open reset screen: {}", stderr))
     }
 }
 
-/// Get device-specific instructions
+/// Check if device is still connected (for polling after reset)
+#[tauri::command]
+async fn check_device_connected(device_id: String) -> Result<bool, String> {
+    let device_id = sanitize_device_id(&device_id)?;
+
+    let output = Command::new("adb")
+        .arg("devices")
+        .output()
+        .map_err(|e| format!("Failed to check devices: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let devices = parse_adb_devices(&stdout);
+
+    Ok(devices.iter().any(|(id, _)| id == &device_id))
+}
+
+/// Get device-specific factory reset instructions
 #[tauri::command]
 fn get_instructions(brand: String, model: String) -> Vec<String> {
-    // Hardcoded instructions map for supported devices
-    match (brand.to_lowercase().as_str(), model.to_lowercase().as_str()) {
-        ("samsung", m) if m.contains("s24") || m.contains("s25") => vec![
-            "1. Go to Settings > General management > Reset".to_string(),
-            "2. Tap 'Factory data reset'".to_string(),
-            "3. Review information and tap 'Reset'".to_string(),
-            "4. Enter your PIN/password if prompted".to_string(),
-            "5. Tap 'Delete all' to confirm".to_string(),
-            "Note: One UI may require Samsung account verification.".to_string(),
-        ],
-        ("google", m) if m.contains("pixel") => vec![
+    let brand_lower = brand.to_lowercase();
+    let model_lower = model.to_lowercase();
+
+    match brand_lower.as_str() {
+        "samsung" => {
+            if model_lower.contains("s24") || model_lower.contains("s25") {
+                vec![
+                    "1. Go to Settings > General management > Reset".to_string(),
+                    "2. Tap 'Factory data reset'".to_string(),
+                    "3. Scroll down and review the information".to_string(),
+                    "4. Tap 'Reset' at the bottom".to_string(),
+                    "5. Enter your PIN/password if prompted".to_string(),
+                    "6. Tap 'Delete all' to confirm".to_string(),
+                    "".to_string(),
+                    "Note: One UI may require Samsung account verification.".to_string(),
+                ]
+            } else if model_lower.contains("a55") || model_lower.contains("a54") {
+                vec![
+                    "1. Go to Settings > General management > Reset".to_string(),
+                    "2. Tap 'Factory data reset'".to_string(),
+                    "3. Review and tap 'Reset'".to_string(),
+                    "4. Enter your PIN and tap 'Delete all'".to_string(),
+                ]
+            } else {
+                vec![
+                    "1. Go to Settings > General management > Reset".to_string(),
+                    "2. Tap 'Factory data reset'".to_string(),
+                    "3. Tap 'Reset' and confirm with your PIN".to_string(),
+                    "4. Tap 'Delete all' to complete".to_string(),
+                ]
+            }
+        }
+        "google" => vec![
             "1. Go to Settings > System > Reset options".to_string(),
             "2. Tap 'Erase all data (factory reset)'".to_string(),
             "3. Tap 'Erase all data' to confirm".to_string(),
             "4. Enter your PIN if prompted".to_string(),
+            "5. Wait for the device to restart".to_string(),
         ],
-        ("oneplus", _) => vec![
+        "oneplus" => vec![
             "1. Go to Settings > System > Reset options".to_string(),
             "2. Tap 'Erase all data (factory reset)'".to_string(),
             "3. Tap 'Reset phone'".to_string(),
             "4. Enter your PIN and confirm".to_string(),
+            "5. Device will reboot and reset".to_string(),
+        ],
+        "motorola" => {
+            if model_lower.contains("edge") {
+                vec![
+                    "1. Go to Settings > System > Reset options".to_string(),
+                    "2. Tap 'Erase all data (factory reset)'".to_string(),
+                    "3. Tap 'Erase all data'".to_string(),
+                    "4. Enter your PIN to confirm".to_string(),
+                ]
+            } else {
+                vec![
+                    "1. Go to Settings > System > Advanced > Reset options".to_string(),
+                    "2. Tap 'Erase all data (factory reset)'".to_string(),
+                    "3. Confirm and enter your PIN".to_string(),
+                ]
+            }
+        }
+        "nothing" | "cmf" => vec![
+            "1. Go to Settings > System > Reset options".to_string(),
+            "2. Tap 'Erase all data (factory reset)'".to_string(),
+            "3. Tap 'Erase all data' and confirm".to_string(),
+            "4. Enter your PIN if prompted".to_string(),
         ],
         _ => vec![
             "1. Go to Settings > System (or General Management)".to_string(),
             "2. Find 'Reset' or 'Reset options'".to_string(),
             "3. Select 'Factory data reset' or 'Erase all data'".to_string(),
             "4. Follow on-screen prompts to confirm".to_string(),
-            "Note: Steps may vary by manufacturer.".to_string(),
+            "5. Enter your PIN/password if requested".to_string(),
+            "".to_string(),
+            "Note: Steps may vary by manufacturer and Android version.".to_string(),
         ],
     }
 }
@@ -251,18 +538,52 @@ fn get_instructions(brand: String, model: String) -> Vec<String> {
 /// Revoke ADB debugging on device (optional security step)
 #[tauri::command]
 async fn revoke_adb(device_id: String) -> Result<String, String> {
+    let device_id = sanitize_device_id(&device_id)?;
+
     let output = Command::new("adb")
         .args([
-            "-s", &device_id,
-            "shell", "settings", "put", "global", "adb_enabled", "0"
+            "-s",
+            &device_id,
+            "shell",
+            "settings",
+            "put",
+            "global",
+            "adb_enabled",
+            "0",
         ])
         .output()
         .map_err(|e| format!("Failed to revoke ADB: {}", e))?;
 
     if output.status.success() {
-        Ok("ADB debugging disabled on device".to_string())
+        Ok("ADB debugging disabled on device. You may need to re-enable it for future use.".to_string())
     } else {
-        Err("Failed to disable ADB debugging".to_string())
+        Err("Failed to disable ADB debugging. Device may require root access.".to_string())
+    }
+}
+
+/// Clean up any temporary wipe files on device
+#[tauri::command]
+async fn cleanup_wipe_files(device_id: String) -> Result<String, String> {
+    let device_id = sanitize_device_id(&device_id)?;
+
+    let output = Command::new("adb")
+        .args([
+            "-s",
+            &device_id,
+            "shell",
+            "rm",
+            "-rf",
+            "/sdcard/wipe_temp",
+            "/sdcard/secure_wipe_*",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to cleanup: {}", e))?;
+
+    if output.status.success() {
+        Ok("Temporary wipe files cleaned up.".to_string())
+    } else {
+        // Not critical if cleanup fails
+        Ok("Cleanup attempted. Some files may remain.".to_string())
     }
 }
 
@@ -275,12 +596,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            check_adb_status,
             check_adb,
             get_storage_info,
             run_wipe,
             run_factory_reset,
+            check_device_connected,
             get_instructions,
             revoke_adb,
+            cleanup_wipe_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -293,6 +617,75 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_device_id_valid() {
+        assert!(sanitize_device_id("emulator-5554").is_ok());
+        assert!(sanitize_device_id("192.168.1.1:5555").is_ok());
+        assert!(sanitize_device_id("RFXXXXXXXX").is_ok());
+        assert!(sanitize_device_id("device_123").is_ok());
+    }
+
+    #[test]
+    fn test_sanitize_device_id_invalid() {
+        assert!(sanitize_device_id("").is_err());
+        assert!(sanitize_device_id("device; rm -rf /").is_err());
+        assert!(sanitize_device_id("$(whoami)").is_err());
+        assert!(sanitize_device_id(&"a".repeat(100)).is_err());
+    }
+
+    #[test]
+    fn test_parse_adb_devices() {
+        let output = "List of devices attached\n\
+                      emulator-5554\tdevice\n\
+                      192.168.1.1:5555\tdevice\n\
+                      RF123456\toffline\n";
+
+        let devices = parse_adb_devices(output);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].0, "emulator-5554");
+        assert_eq!(devices[1].0, "192.168.1.1:5555");
+    }
+
+    #[test]
+    fn test_parse_adb_devices_empty() {
+        let output = "List of devices attached\n\n";
+        let devices = parse_adb_devices(output);
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn test_parse_df_output() {
+        let output = "Filesystem     1M-blocks  Used Available Use% Mounted on\n\
+                      /dev/fuse         118170 45678     72492  39% /sdcard\n";
+
+        let info = parse_df_output(output).unwrap();
+        assert_eq!(info.total_mb, 118170);
+        assert_eq!(info.used_mb, 45678);
+        assert_eq!(info.available_mb, 72492);
+        assert_eq!(info.percent_used, 39);
+    }
+
+    #[test]
+    fn test_parse_df_output_invalid() {
+        let output = "Error: device not found\n";
+        assert!(parse_df_output(output).is_err());
+    }
+
+    #[test]
+    fn test_parse_progress_line() {
+        let line = "PROGRESS: Pass 2/3 - 1024MB (67%)";
+        let progress = parse_progress_line(line, 3).unwrap();
+        assert_eq!(progress.pass, 2);
+        assert_eq!(progress.total_passes, 3);
+        assert!((progress.percent - 67.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_parse_progress_line_no_match() {
+        let line = "Starting wipe operation...";
+        assert!(parse_progress_line(line, 3).is_none());
+    }
 
     #[test]
     fn test_wipe_config_validation() {
@@ -311,16 +704,31 @@ mod tests {
     }
 
     #[test]
-    fn test_get_instructions_samsung() {
-        let instructions = get_instructions("Samsung".to_string(), "Galaxy S24".to_string());
+    fn test_get_instructions_samsung_s24() {
+        let instructions = get_instructions("Samsung".to_string(), "Galaxy S24 Ultra".to_string());
         assert!(!instructions.is_empty());
         assert!(instructions[0].contains("Settings"));
+        assert!(instructions.iter().any(|s| s.contains("One UI")));
+    }
+
+    #[test]
+    fn test_get_instructions_pixel() {
+        let instructions = get_instructions("Google".to_string(), "Pixel 8 Pro".to_string());
+        assert!(!instructions.is_empty());
+        assert!(instructions.iter().any(|s| s.contains("System")));
     }
 
     #[test]
     fn test_get_instructions_fallback() {
-        let instructions = get_instructions("Unknown".to_string(), "Phone".to_string());
+        let instructions = get_instructions("Unknown".to_string(), "Phone XYZ".to_string());
         assert!(!instructions.is_empty());
-        assert!(instructions.last().unwrap().contains("may vary"));
+        assert!(instructions.iter().any(|s| s.contains("may vary")));
+    }
+
+    #[test]
+    fn test_get_instructions_case_insensitive() {
+        let instructions1 = get_instructions("SAMSUNG".to_string(), "galaxy s24".to_string());
+        let instructions2 = get_instructions("samsung".to_string(), "Galaxy S24".to_string());
+        assert_eq!(instructions1.len(), instructions2.len());
     }
 }
