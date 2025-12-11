@@ -99,6 +99,35 @@ Take the extra time. Wipe it properly. Because "probably fine" is a lousy securi
 
 A complete guide to securely wiping an Android phone before trade-in, sale, or disposal. This guide uses ADB (Android Debug Bridge) to overwrite storage with random data multiple times after a factory reset.
 
+## Quick Start (TL;DR)
+
+If you're comfortable with terminal commands, here's the short version:
+
+```bash
+# 1. Install ADB (pick your OS)
+sudo apt install adb                          # Linux
+brew install android-platform-tools           # macOS
+# Windows: Download from developer.android.com/studio/releases/platform-tools
+
+# 2. On your phone: Remove all accounts, then factory reset
+
+# 3. After reset: Enable Developer Options (tap Build Number 7 times)
+#    Then enable USB Debugging in Developer Options
+
+# 4. Connect phone via USB, authorize the connection on phone
+
+# 5. Clone this repo and run the script
+git clone https://github.com/OnlyParams/android-secure-wipe.git
+cd android-secure-wipe
+./scripts/quick_wipe.sh
+
+# 6. Do another factory reset, then you're done!
+```
+
+**New to this?** Read the full guide below - it explains each step in detail.
+
+---
+
 ## Why This Matters
 
 A standard factory reset marks data as deleted but doesn't actually overwrite it. With forensic tools, deleted data can potentially be recovered. This guide ensures your personal data is thoroughly scrambled beyond recovery.
@@ -180,18 +209,24 @@ adb pull /sdcard/Documents ./backup/documents
 
 ## Phase 2: Sign Out of Accounts
 
-**Critical:** Remove accounts BEFORE factory reset to avoid Factory Reset Protection (FRP) lock.
+> **Why this matters:** If you factory reset without removing your Google account first, the phone will be locked with "Factory Reset Protection" (FRP). This means whoever receives the phone won't be able to use it without your Google password - and you won't be able to prove it's not stolen. **Always remove accounts BEFORE the factory reset.**
 
-1. **Settings -> Accounts**
-2. Tap each account -> "Remove account"
-3. Remove Google account last
-4. **Settings -> General Management -> Reset -> Factory data reset**
-5. Confirm you see "No accounts" or similar
+**Step by step:**
 
-### Samsung-Specific
+1. Go to **Settings -> Accounts**
+2. Tap each account and select **"Remove account"**
+3. Remove your Google account **last** (some apps won't let you remove them without a Google account present)
+4. After all accounts are removed, go to **Settings -> General Management -> Reset**
+5. Before tapping reset, verify it shows "No accounts" or you see no accounts listed
+
+### Samsung Phones - Extra Steps
+
+Samsung phones have their own account system that also enables device lock:
 
 1. **Settings -> Accounts -> Samsung account -> Sign out**
-2. Disable Find My Mobile: **Settings -> Biometrics and security -> Find My Mobile -> OFF**
+2. **Settings -> Biometrics and security -> Find My Mobile -> Turn OFF**
+
+If you skip these steps, Samsung's "Find My Mobile" can still lock the device remotely.
 
 ---
 
@@ -296,29 +331,58 @@ tail -f phone_wipe.log
 ## Troubleshooting
 
 ### "unauthorized" in adb devices
-- Check phone screen for authorization popup
-- Tap "Allow" (check "Always allow" box)
-- If no popup: Settings -> Developer Options -> Revoke USB debugging authorizations -> reconnect
 
-### "device not found"
-- Try different USB cable (use data cable, not charge-only)
-- Try different USB port
-- On phone: change USB mode to "File Transfer (MTP)"
-- Restart ADB: `adb kill-server && adb start-server`
+This means your phone sees the computer but hasn't trusted it yet.
+
+**Fix:**
+1. Look at your phone screen - there should be a popup asking "Allow USB debugging?"
+2. Check the box that says "Always allow from this computer"
+3. Tap **Allow**
+
+**If no popup appears:**
+1. Go to Settings -> Developer Options
+2. Tap "Revoke USB debugging authorizations"
+3. Unplug and replug the USB cable
+4. The popup should now appear
+
+### "device not found" or "no devices"
+
+This means your computer can't see the phone at all.
+
+**Checklist:**
+1. **Try a different USB cable** - Many cables are "charge only" and don't transfer data. Use the cable that came with your phone if possible.
+2. **Try a different USB port** - Front panel ports sometimes have issues. Try a port directly on the back of your computer.
+3. **Check the USB mode on your phone** - Pull down the notification shade and look for "USB charging this device". Tap it and select "File Transfer" or "MTP".
+4. **Restart the ADB server** - Run: `adb kill-server && adb start-server`
 
 ### "Permission denied" errors
-- `/sdcard/` should be writable without root
-- If issues persist, try: `adb shell "run-as com.android.shell dd ..."`
+
+The scripts write to `/sdcard/` which should always be writable without root access.
+
+**If you see this error:**
+1. Make sure you completed the factory reset before running the script
+2. Try disconnecting and reconnecting the phone
+3. Restart ADB: `adb kill-server && adb start-server`
+
+**Note:** Some guides suggest using `run-as` commands - this won't help here because `run-as` only works for app debugging, not storage access.
 
 ### Write speed is slow
-- USB 2.0 ports are slower than USB 3.0
-- Some cables limit speed
-- Phone storage speed varies by model
+
+This is normal - writing random data to flash storage takes time.
+
+**Tips to speed things up:**
+- Use a USB 3.0 port (usually blue inside) instead of USB 2.0
+- Use a high-quality USB cable
+- Use `quick_wipe.sh` with `--size 512` for faster passes
+- Keep the phone unlocked and screen on during the wipe
 
 ### Phone disconnects during wipe
-- Disable phone auto-sleep: Settings -> Display -> Screen timeout -> 10 minutes
-- Keep phone unlocked during wipe
-- Check USB cable connection
+
+**Prevent disconnections:**
+1. Disable auto-sleep: Settings -> Display -> Screen timeout -> Set to 10 minutes or "Never"
+2. Keep the phone unlocked during the entire wipe
+3. Don't move the phone or cable during the wipe
+4. Make sure the USB cable is firmly connected at both ends
 
 ---
 

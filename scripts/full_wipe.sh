@@ -4,11 +4,17 @@
 # Dynamic storage detection, multi-pass full storage overwrite
 # Includes logging, progress tracking, and desktop notification
 #
-# Version: 2.1.0
+# Version: 2.2.0
 # Repository: https://github.com/OnlyParams/android-secure-wipe
 #
 # CHANGELOG:
 # ----------
+# v2.2.0 (2024-12-11)
+#   - Added input validation for --passes (must be 1-20)
+#   - Rejects non-numeric values with clear error messages
+#   - Improved WIPE_DIR quoting in cleanup for safety
+#   - Better error messages for novice users
+#
 # v2.1.0 (2024-12-11)
 #   - Added explicit device targeting with adb -s to prevent wrong-device errors
 #   - Added --yes/-y flag to skip confirmation prompt (for automation)
@@ -47,7 +53,7 @@
 set -euo pipefail
 
 # Script version
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 # Colors for output
 RED='\033[0;31m'
@@ -104,6 +110,28 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# =============================================================================
+# Input Validation
+# =============================================================================
+# Validate PASSES is a number between 1 and 20
+if ! [[ "$PASSES" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Error: --passes must be a number${NC}"
+    echo "Example: --passes 3"
+    exit 1
+fi
+
+if [ "$PASSES" -lt 1 ] || [ "$PASSES" -gt 20 ]; then
+    echo -e "${RED}Error: --passes must be between 1 and 20${NC}"
+    echo "You specified: $PASSES"
+    echo ""
+    echo "Why this limit?"
+    echo "  - 1 pass is minimum for any overwrite"
+    echo "  - 3 passes is recommended for most users"
+    echo "  - More than 20 passes provides no additional security benefit"
+    echo "    and takes a very long time"
+    exit 1
+fi
+
 # Initialize log file
 echo "=== Android Full Secure Wipe Log ===" > "$LOG_FILE"
 echo "Version: $VERSION" >> "$LOG_FILE"
@@ -148,7 +176,7 @@ cleanup() {
     echo ""
     if [ $exit_code -ne 0 ] && [ -n "${DEVICE:-}" ]; then
         log "${YELLOW}Interrupted! Cleaning up temporary files on device...${NC}"
-        adb -s "$DEVICE" shell "rm -rf $WIPE_DIR" 2>/dev/null || true
+        adb -s "$DEVICE" shell "rm -rf \"$WIPE_DIR\"" 2>/dev/null || true
         log_only "Cleanup performed after interrupt (exit code: $exit_code)"
     fi
     exit $exit_code

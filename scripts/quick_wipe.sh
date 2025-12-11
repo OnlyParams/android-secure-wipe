@@ -4,11 +4,18 @@
 # 3 passes x 1GB chunks, ~15 minutes
 # Good for most trade-in scenarios
 #
-# Version: 2.1.0
+# Version: 2.2.0
 # Repository: https://github.com/OnlyParams/android-secure-wipe
 #
 # CHANGELOG:
 # ----------
+# v2.2.0 (2024-12-11)
+#   - Added input validation for --passes (must be 1-20) and --size (64-10240 MB)
+#   - Rejects non-numeric values with clear error messages
+#   - Added --dry-run flag for consistency with full_wipe.sh
+#   - Improved WIPE_DIR quoting in cleanup for safety
+#   - Better error messages for novice users
+#
 # v2.1.0 (2024-12-11)
 #   - Added explicit device targeting with adb -s to prevent wrong-device errors
 #   - Added --yes/-y flag to skip confirmation prompt (for automation)
@@ -29,7 +36,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 # Colors for output
 RED='\033[0;31m'
@@ -43,6 +50,7 @@ PASSES=3
 CHUNK_SIZE_MB=1024  # 1GB per pass
 WIPE_DIR="/sdcard/wipe_temp"
 AUTO_YES=false
+DRY_RUN=false
 MIN_SPACE_MB=100    # Minimum required space in MB
 
 # Parse command line arguments
@@ -60,6 +68,10 @@ while [[ $# -gt 0 ]]; do
             AUTO_YES=true
             shift
             ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         --version|-v)
             echo "quick_wipe.sh version $VERSION"
             exit 0
@@ -68,11 +80,18 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: quick_wipe.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --passes N    Number of overwrite passes (default: 3)"
-            echo "  --size MB     Size in MB to write per pass (default: 1024)"
+            echo "  --passes N    Number of overwrite passes (default: 3, max: 20)"
+            echo "  --size MB     Size in MB to write per pass (default: 1024, range: 64-10240)"
+            echo "  --dry-run     Show what would be done without writing any data"
             echo "  --yes, -y     Skip confirmation prompt (for automation)"
             echo "  --version     Show version number"
             echo "  --help        Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  ./quick_wipe.sh                    # Default: 3 passes x 1GB"
+            echo "  ./quick_wipe.sh --passes 5        # 5 passes x 1GB"
+            echo "  ./quick_wipe.sh --size 512        # 3 passes x 512MB (faster)"
+            echo "  ./quick_wipe.sh --dry-run         # See what would happen"
             exit 0
             ;;
         *)
@@ -83,13 +102,53 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# =============================================================================
+# Input Validation
+# =============================================================================
+
+# Validate PASSES is a number between 1 and 20
+if ! [[ "$PASSES" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Error: --passes must be a number${NC}"
+    echo "Example: --passes 3"
+    exit 1
+fi
+
+if [ "$PASSES" -lt 1 ] || [ "$PASSES" -gt 20 ]; then
+    echo -e "${RED}Error: --passes must be between 1 and 20${NC}"
+    echo "You specified: $PASSES"
+    echo ""
+    echo "Recommended values:"
+    echo "  - 1-3 passes: Good for most trade-ins"
+    echo "  - 3-5 passes: Extra cautious"
+    echo "  - More than 5: Diminishing returns, much longer time"
+    exit 1
+fi
+
+# Validate CHUNK_SIZE_MB is a number between 64 and 10240 (64MB to 10GB)
+if ! [[ "$CHUNK_SIZE_MB" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Error: --size must be a number (in megabytes)${NC}"
+    echo "Example: --size 1024  (for 1GB per pass)"
+    exit 1
+fi
+
+if [ "$CHUNK_SIZE_MB" -lt 64 ] || [ "$CHUNK_SIZE_MB" -gt 10240 ]; then
+    echo -e "${RED}Error: --size must be between 64 and 10240 MB${NC}"
+    echo "You specified: ${CHUNK_SIZE_MB}MB"
+    echo ""
+    echo "Recommended values:"
+    echo "  - 512 MB:  Quick test (~8 min for 3 passes)"
+    echo "  - 1024 MB: Default, good balance (~15 min for 3 passes)"
+    echo "  - 2048 MB: More thorough (~30 min for 3 passes)"
+    exit 1
+fi
+
 # Cleanup function for trap
 cleanup() {
     local exit_code=$?
     if [ $exit_code -ne 0 ] && [ -n "${DEVICE:-}" ]; then
         echo ""
         echo -e "${YELLOW}Interrupted! Cleaning up...${NC}"
-        adb -s "$DEVICE" shell "rm -rf $WIPE_DIR" 2>/dev/null || true
+        adb -s "$DEVICE" shell "rm -rf \"$WIPE_DIR\"" 2>/dev/null || true
     fi
     exit $exit_code
 }
@@ -120,13 +179,19 @@ echo -e "${BLUE}  ${PASSES} passes x ${CHUNK_SIZE_MB}MB${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo
 
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}*** DRY RUN MODE - No data will be written ***${NC}"
+    echo
+fi
+
 # Check if adb is installed
 if ! command -v adb &> /dev/null; then
     echo -e "${RED}Error: adb is not installed or not in PATH${NC}"
-    echo "Install with:"
-    echo "  Linux: sudo apt install adb"
-    echo "  macOS: brew install android-platform-tools"
-    echo "  Windows: Download Android SDK Platform Tools"
+    echo ""
+    echo "Install ADB first:"
+    echo "  Linux:   sudo apt install adb"
+    echo "  macOS:   brew install android-platform-tools"
+    echo "  Windows: Download from developer.android.com/studio/releases/platform-tools"
     exit 1
 fi
 
@@ -136,12 +201,13 @@ DEVICE=$(adb devices | grep -v "List" | grep "device$" | head -1 | cut -f1)
 
 if [ -z "$DEVICE" ]; then
     echo -e "${RED}Error: No authorized device found${NC}"
-    echo "Make sure:"
-    echo "  1. Phone is connected via USB"
-    echo "  2. USB debugging is enabled"
-    echo "  3. You've authorized this computer on the phone"
-    echo
-    echo "Run 'adb devices' to check connection status"
+    echo ""
+    echo "Checklist:"
+    echo "  1. Is your phone connected via USB cable?"
+    echo "  2. Is USB debugging enabled? (Settings -> Developer Options -> USB Debugging)"
+    echo "  3. Did you tap 'Allow' on the phone when it asked to trust this computer?"
+    echo ""
+    echo "Still stuck? Run 'adb devices' to see what's detected."
     exit 1
 fi
 
@@ -157,11 +223,13 @@ AVAILABLE_MB=$(parse_size_to_mb "$AVAILABLE_STR")
 
 # Verify we have enough space
 if [ "$AVAILABLE_MB" -lt "$CHUNK_SIZE_MB" ]; then
-    echo -e "${RED}Error: Insufficient storage space${NC}"
+    echo -e "${RED}Error: Not enough storage space${NC}"
     echo "  Available: ${AVAILABLE_MB}MB"
     echo "  Requested: ${CHUNK_SIZE_MB}MB per pass"
     echo ""
-    echo "Either reduce --size or free up space on the device."
+    echo "Solutions:"
+    echo "  - Use a smaller --size (e.g., --size 512)"
+    echo "  - Free up space on the device first"
     exit 1
 fi
 
@@ -179,6 +247,13 @@ echo -e "${YELLOW}This will write ${CHUNK_SIZE_MB}MB of random data ${PASSES} ti
 echo -e "${YELLOW}Total: ${TOTAL_MB}MB (~$((TOTAL_MB / 1024))GB)${NC}"
 echo -e "${YELLOW}Estimated time: ~$((TOTAL_MB / 60)) minutes${NC}"
 echo
+
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${GREEN}Dry run complete. No data was written.${NC}"
+    echo ""
+    echo "To actually run the wipe, remove the --dry-run flag."
+    exit 0
+fi
 
 if [ "$AUTO_YES" = true ]; then
     echo -e "${GREEN}Auto-confirmed via --yes flag${NC}"
