@@ -2,23 +2,12 @@
 # SecureWipe Wizard - Git Ignore
 # ===========================================
 
-# ----- CONFIDENTIAL BUSINESS DOCUMENTS -----
-# Never commit business plans or sensitive docs
-docs/BUSINESS_PLAN.md
-/private/*
-*.plan.md
-*.confidential.md
-*_INTERNAL.md
-
 # ----- TAURI / RUST BUILD ARTIFACTS -----
-# Desktop app build outputs
 desktop-app/src-tauri/target/
 desktop-app/src-tauri/gen/
 desktop-app/node_modules/
 desktop-app/dist/
 desktop-app/.svelte-kit/
-
-# Rust artifacts (if any outside desktop-app)
 target/
 Cargo.lock
 *.rlib
@@ -42,7 +31,6 @@ package-lock.json
 Thumbs.db
 
 # ----- ENVIRONMENT / SECRETS -----
-# Never commit credentials
 .env
 .env.local
 .env.*.local
@@ -50,9 +38,6 @@ Thumbs.db
 *.key
 credentials.json
 secrets.json
-
-# ----- CLAUDE CODE TEMP FILES -----
-claude-edited.json
 
 # ----- TESTING / COVERAGE -----
 coverage/
@@ -73,6 +58,8 @@ ehthumbs.db
 logs/
 
 # ----- TAURI SIGNING KEYS -----
-# Keep signing keys out of repo
 *.tauri.key
 *.tauri.key.pub
+
+# ----- TEMP FILES -----
+claude-edited.json
