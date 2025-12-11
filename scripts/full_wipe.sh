@@ -4,11 +4,17 @@
 # Dynamic storage detection, multi-pass full storage overwrite
 # Includes logging, progress tracking, and desktop notification
 #
-# Version: 2.0.0
+# Version: 2.1.0
 # Repository: https://github.com/OnlyParams/android-secure-wipe
 #
 # CHANGELOG:
 # ----------
+# v2.1.0 (2024-12-11)
+#   - Added explicit device targeting with adb -s to prevent wrong-device errors
+#   - Added --yes/-y flag to skip confirmation prompt (for automation)
+#   - Added space verification before write (ensures available >= target)
+#   - Minimum space requirement: 100MB
+#
 # v2.0.0 (2024-12-11)
 #   - BREAKING: Rewrote wipe loop to run entirely on-device via single adb shell
 #     session instead of per-chunk adb calls (major performance improvement)
@@ -41,7 +47,7 @@
 set -euo pipefail
 
 # Script version
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 # Colors for output
 RED='\033[0;31m'
@@ -57,6 +63,8 @@ WIPE_DIR="/sdcard/wipe_temp"
 LOG_FILE="phone_wipe.log"
 FILL_PERCENT=95    # Fill to 95% to avoid running out of space
 DRY_RUN=false
+AUTO_YES=false
+MIN_SPACE_MB=100   # Minimum required space in MB
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -69,6 +77,10 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --yes|-y)
+            AUTO_YES=true
+            shift
+            ;;
         --version|-v)
             echo "full_wipe.sh version $VERSION"
             exit 0
@@ -79,6 +91,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --passes N    Number of overwrite passes (default: 3)"
             echo "  --dry-run     Show what would be done without writing"
+            echo "  --yes, -y     Skip confirmation prompt (for automation)"
             echo "  --version     Show version number"
             echo "  --help        Show this help message"
             exit 0
@@ -133,9 +146,9 @@ notify() {
 cleanup() {
     local exit_code=$?
     echo ""
-    if [ $exit_code -ne 0 ]; then
+    if [ $exit_code -ne 0 ] && [ -n "${DEVICE:-}" ]; then
         log "${YELLOW}Interrupted! Cleaning up temporary files on device...${NC}"
-        adb shell "rm -rf $WIPE_DIR" 2>/dev/null || true
+        adb -s "$DEVICE" shell "rm -rf $WIPE_DIR" 2>/dev/null || true
         log_only "Cleanup performed after interrupt (exit code: $exit_code)"
     fi
     exit $exit_code
@@ -212,15 +225,17 @@ fi
 log "${GREEN}Found device: $DEVICE${NC}"
 log_only "Device ID: $DEVICE"
 
+# From here on, use adb -s "$DEVICE" for all commands to ensure correct device targeting
+
 # Get device model
-MODEL=$(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')
+MODEL=$(adb -s "$DEVICE" shell getprop ro.product.model 2>/dev/null | tr -d '\r')
 log "Device model: $MODEL"
 log_only "Model: $MODEL"
 echo
 
 # Get storage information using df -h for human-readable output
 log "Analyzing storage..."
-STORAGE_LINE=$(adb shell "df -h /sdcard 2>/dev/null | tail -1" | tr -d '\r')
+STORAGE_LINE=$(adb -s "$DEVICE" shell "df -h /sdcard 2>/dev/null | tail -1" | tr -d '\r')
 
 # Parse the df output - format: Filesystem Size Used Avail Use% Mounted
 TOTAL_STR=$(echo "$STORAGE_LINE" | awk '{print $2}')
@@ -229,8 +244,26 @@ AVAILABLE_STR=$(echo "$STORAGE_LINE" | awk '{print $4}')
 TOTAL_MB=$(parse_size_to_mb "$TOTAL_STR")
 AVAILABLE_MB=$(parse_size_to_mb "$AVAILABLE_STR")
 
+# Verify we have enough space
+if [ "$AVAILABLE_MB" -lt "$MIN_SPACE_MB" ]; then
+    log "${RED}Error: Insufficient storage space${NC}"
+    echo "  Available: ${AVAILABLE_MB}MB"
+    echo "  Required:  ${MIN_SPACE_MB}MB minimum"
+    echo ""
+    echo "Free up some space on the device or perform a factory reset first."
+    exit 1
+fi
+
 # Calculate target fill size (95% of available to leave buffer)
 TARGET_MB=$((AVAILABLE_MB * FILL_PERCENT / 100))
+
+# Ensure target is at least MIN_SPACE_MB
+if [ "$TARGET_MB" -lt "$MIN_SPACE_MB" ]; then
+    log "${RED}Error: Not enough space to perform meaningful wipe${NC}"
+    echo "  Available: ${AVAILABLE_MB}MB"
+    echo "  Target would be: ${TARGET_MB}MB (below ${MIN_SPACE_MB}MB minimum)"
+    exit 1
+fi
 
 echo -e "${CYAN}Storage Analysis:${NC}"
 echo -e "  Total storage: ~$((TOTAL_MB / 1024))GB ($TOTAL_STR)"
@@ -253,14 +286,19 @@ echo "  On encrypted devices, factory reset destroys encryption keys - that's"
 echo "  the primary protection. This script provides additional assurance."
 echo
 
-# Confirm before proceeding
+# Confirm before proceeding (unless --yes flag)
 echo -e "${YELLOW}This will fill the storage with random data ${PASSES} times.${NC}"
 echo -e "${YELLOW}Total data to write: ~$((TARGET_MB * PASSES / 1024))GB${NC}"
 echo
-read -p "Continue? (y/N): " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    log "Aborted by user."
-    exit 0
+
+if [ "$AUTO_YES" = true ]; then
+    log "Auto-confirmed via --yes flag"
+else
+    read -p "Continue? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log "Aborted by user."
+        exit 0
+    fi
 fi
 
 if [ "$DRY_RUN" = true ]; then
@@ -277,7 +315,7 @@ START_TIME=$(date +%s)
 # This dramatically reduces overhead vs per-chunk adb calls
 log "Executing wipe passes on device (this runs entirely on-device for speed)..."
 
-adb shell "$(cat <<REMOTE_SCRIPT
+adb -s "$DEVICE" shell "$(cat <<REMOTE_SCRIPT
 #!/system/bin/sh
 # On-device wipe script - runs entirely on phone for maximum speed
 

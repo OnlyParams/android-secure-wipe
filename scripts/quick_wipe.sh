@@ -4,11 +4,16 @@
 # 3 passes x 1GB chunks, ~15 minutes
 # Good for most trade-in scenarios
 #
-# Version: 2.0.0
+# Version: 2.1.0
 # Repository: https://github.com/OnlyParams/android-secure-wipe
 #
 # CHANGELOG:
 # ----------
+# v2.1.0 (2024-12-11)
+#   - Added explicit device targeting with adb -s to prevent wrong-device errors
+#   - Added --yes/-y flag to skip confirmation prompt (for automation)
+#   - Added space verification before write (ensures available >= requested size)
+#
 # v2.0.0 (2024-12-11)
 #   - Rewrote to run wipe loop on-device in single adb shell session
 #   - Added set -euo pipefail for safer execution
@@ -24,7 +29,7 @@
 
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 # Colors for output
 RED='\033[0;31m'
@@ -37,6 +42,8 @@ NC='\033[0m' # No Color
 PASSES=3
 CHUNK_SIZE_MB=1024  # 1GB per pass
 WIPE_DIR="/sdcard/wipe_temp"
+AUTO_YES=false
+MIN_SPACE_MB=100    # Minimum required space in MB
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -49,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             CHUNK_SIZE_MB="$2"
             shift 2
             ;;
+        --yes|-y)
+            AUTO_YES=true
+            shift
+            ;;
         --version|-v)
             echo "quick_wipe.sh version $VERSION"
             exit 0
@@ -59,6 +70,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --passes N    Number of overwrite passes (default: 3)"
             echo "  --size MB     Size in MB to write per pass (default: 1024)"
+            echo "  --yes, -y     Skip confirmation prompt (for automation)"
             echo "  --version     Show version number"
             echo "  --help        Show this help message"
             exit 0
@@ -74,15 +86,33 @@ done
 # Cleanup function for trap
 cleanup() {
     local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
+    if [ $exit_code -ne 0 ] && [ -n "${DEVICE:-}" ]; then
         echo ""
         echo -e "${YELLOW}Interrupted! Cleaning up...${NC}"
-        adb shell "rm -rf $WIPE_DIR" 2>/dev/null || true
+        adb -s "$DEVICE" shell "rm -rf $WIPE_DIR" 2>/dev/null || true
     fi
     exit $exit_code
 }
 
 trap cleanup EXIT INT TERM
+
+# Parse storage size with unit suffix (handles decimals like "1.2G")
+parse_size_to_mb() {
+    local size_str="$1"
+    local value suffix mb
+
+    value=$(echo "$size_str" | sed -E 's/([0-9.]+).*/\1/')
+    suffix=$(echo "$size_str" | sed -E 's/[0-9.]+(.*)/\1/' | tr '[:lower:]' '[:upper:]')
+
+    case "$suffix" in
+        G|GB) mb=$(awk "BEGIN {printf \"%.0f\", $value * 1024}") ;;
+        M|MB) mb=$(awk "BEGIN {printf \"%.0f\", $value}") ;;
+        K|KB) mb=$(awk "BEGIN {printf \"%.0f\", $value / 1024}") ;;
+        *)    mb=$(awk "BEGIN {printf \"%.0f\", $value / 1024}") ;;
+    esac
+
+    echo "$mb"
+}
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  Android Quick Secure Wipe v${VERSION}${NC}"
@@ -116,6 +146,31 @@ if [ -z "$DEVICE" ]; then
 fi
 
 echo -e "${GREEN}Found device: $DEVICE${NC}"
+
+# From here on, use adb -s "$DEVICE" for all commands to ensure correct device targeting
+
+# Check available space
+echo -e "${YELLOW}Checking available storage...${NC}"
+STORAGE_LINE=$(adb -s "$DEVICE" shell "df -h /sdcard 2>/dev/null | tail -1" | tr -d '\r')
+AVAILABLE_STR=$(echo "$STORAGE_LINE" | awk '{print $4}')
+AVAILABLE_MB=$(parse_size_to_mb "$AVAILABLE_STR")
+
+# Verify we have enough space
+if [ "$AVAILABLE_MB" -lt "$CHUNK_SIZE_MB" ]; then
+    echo -e "${RED}Error: Insufficient storage space${NC}"
+    echo "  Available: ${AVAILABLE_MB}MB"
+    echo "  Requested: ${CHUNK_SIZE_MB}MB per pass"
+    echo ""
+    echo "Either reduce --size or free up space on the device."
+    exit 1
+fi
+
+if [ "$AVAILABLE_MB" -lt "$MIN_SPACE_MB" ]; then
+    echo -e "${RED}Error: Storage space critically low (${AVAILABLE_MB}MB)${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}Available: ${AVAILABLE_MB}MB${NC}"
 echo
 
 # Confirm before proceeding
@@ -124,10 +179,15 @@ echo -e "${YELLOW}This will write ${CHUNK_SIZE_MB}MB of random data ${PASSES} ti
 echo -e "${YELLOW}Total: ${TOTAL_MB}MB (~$((TOTAL_MB / 1024))GB)${NC}"
 echo -e "${YELLOW}Estimated time: ~$((TOTAL_MB / 60)) minutes${NC}"
 echo
-read -p "Continue? (y/N): " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    echo "Aborted."
-    exit 0
+
+if [ "$AUTO_YES" = true ]; then
+    echo -e "${GREEN}Auto-confirmed via --yes flag${NC}"
+else
+    read -p "Continue? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
 fi
 
 echo
@@ -135,7 +195,7 @@ echo -e "${BLUE}Starting quick wipe (runs on-device for speed)...${NC}"
 START_TIME=$(date +%s)
 
 # Run entire wipe on-device in single adb shell session
-adb shell "$(cat <<REMOTE_SCRIPT
+adb -s "$DEVICE" shell "$(cat <<REMOTE_SCRIPT
 #!/system/bin/sh
 WIPE_DIR="$WIPE_DIR"
 PASSES=$PASSES
