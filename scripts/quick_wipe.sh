@@ -4,8 +4,27 @@
 # 3 passes x 1GB chunks, ~15 minutes
 # Good for most trade-in scenarios
 #
+# Version: 2.0.0
+# Repository: https://github.com/OnlyParams/android-secure-wipe
+#
+# CHANGELOG:
+# ----------
+# v2.0.0 (2024-12-11)
+#   - Rewrote to run wipe loop on-device in single adb shell session
+#   - Added set -euo pipefail for safer execution
+#   - Added trap handler for cleanup on interrupt
+#   - Added --passes and --size options
+#   - Added --version and --help flags
+#
+# v1.0.0 (2024-12-11)
+#   - Initial release
+#   - Per-pass adb shell calls
+#   - Basic progress output
+#
 
-set -e
+set -euo pipefail
+
+VERSION="2.0.0"
 
 # Colors for output
 RED='\033[0;31m'
@@ -14,14 +33,60 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
+# Configuration defaults
 PASSES=3
 CHUNK_SIZE_MB=1024  # 1GB per pass
 WIPE_DIR="/sdcard/wipe_temp"
 
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --passes)
+            PASSES="$2"
+            shift 2
+            ;;
+        --size)
+            CHUNK_SIZE_MB="$2"
+            shift 2
+            ;;
+        --version|-v)
+            echo "quick_wipe.sh version $VERSION"
+            exit 0
+            ;;
+        --help|-h)
+            echo "Usage: quick_wipe.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --passes N    Number of overwrite passes (default: 3)"
+            echo "  --size MB     Size in MB to write per pass (default: 1024)"
+            echo "  --version     Show version number"
+            echo "  --help        Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Cleanup function for trap
+cleanup() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo ""
+        echo -e "${YELLOW}Interrupted! Cleaning up...${NC}"
+        adb shell "rm -rf $WIPE_DIR" 2>/dev/null || true
+    fi
+    exit $exit_code
+}
+
+trap cleanup EXIT INT TERM
+
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  Android Quick Secure Wipe${NC}"
-echo -e "${BLUE}  3 passes x 1GB (~15 minutes)${NC}"
+echo -e "${BLUE}  Android Quick Secure Wipe v${VERSION}${NC}"
+echo -e "${BLUE}  ${PASSES} passes x ${CHUNK_SIZE_MB}MB${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo
 
@@ -53,19 +118,11 @@ fi
 echo -e "${GREEN}Found device: $DEVICE${NC}"
 echo
 
-# Create temp directory on phone
-echo -e "${YELLOW}Creating temp directory...${NC}"
-adb shell "mkdir -p $WIPE_DIR" 2>/dev/null || true
-
-# Get available space
-AVAILABLE_KB=$(adb shell "df /sdcard" | tail -1 | awk '{print $4}' | tr -d 'K')
-AVAILABLE_MB=$((AVAILABLE_KB / 1024))
-echo -e "${BLUE}Available space: ${AVAILABLE_MB}MB${NC}"
-echo
-
 # Confirm before proceeding
+TOTAL_MB=$((CHUNK_SIZE_MB * PASSES))
 echo -e "${YELLOW}This will write ${CHUNK_SIZE_MB}MB of random data ${PASSES} times.${NC}"
-echo -e "${YELLOW}Estimated time: ~15 minutes${NC}"
+echo -e "${YELLOW}Total: ${TOTAL_MB}MB (~$((TOTAL_MB / 1024))GB)${NC}"
+echo -e "${YELLOW}Estimated time: ~$((TOTAL_MB / 60)) minutes${NC}"
 echo
 read -p "Continue? (y/N): " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -74,58 +131,71 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
 fi
 
 echo
+echo -e "${BLUE}Starting quick wipe (runs on-device for speed)...${NC}"
 START_TIME=$(date +%s)
 
-# Run wipe passes
-for pass in $(seq 1 $PASSES); do
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}  Pass $pass of $PASSES${NC}"
-    echo -e "${BLUE}========================================${NC}"
+# Run entire wipe on-device in single adb shell session
+adb shell "$(cat <<REMOTE_SCRIPT
+#!/system/bin/sh
+WIPE_DIR="$WIPE_DIR"
+PASSES=$PASSES
+CHUNK_SIZE_MB=$CHUNK_SIZE_MB
 
-    PASS_START=$(date +%s)
-    FILENAME="$WIPE_DIR/wipe_pass_${pass}.bin"
+mkdir -p "\$WIPE_DIR"
 
-    echo -e "${YELLOW}Writing ${CHUNK_SIZE_MB}MB of random data...${NC}"
+for pass in \$(seq 1 \$PASSES); do
+    echo "=== PASS \$pass of \$PASSES ==="
+    FILENAME="\$WIPE_DIR/wipe_pass_\${pass}.bin"
 
-    # Write random data using dd via adb shell
-    # Using /dev/urandom for random data
-    adb shell "dd if=/dev/urandom of=$FILENAME bs=1048576 count=$CHUNK_SIZE_MB 2>&1" | while read line; do
-        # Show progress dots
-        echo -n "."
-    done
-    echo
+    echo "Writing \${CHUNK_SIZE_MB}MB of random data..."
+    dd if=/dev/urandom of="\$FILENAME" bs=1048576 count=\$CHUNK_SIZE_MB 2>&1 | grep -v records || true
 
-    # Sync to ensure data is written to flash
-    echo -e "${YELLOW}Syncing to storage...${NC}"
-    adb shell "sync"
+    echo "Syncing..."
+    sync
 
-    # Delete the file
-    echo -e "${YELLOW}Deleting pass $pass data...${NC}"
-    adb shell "rm -f $FILENAME"
-    adb shell "sync"
+    echo "Deleting pass \$pass data..."
+    rm -f "\$FILENAME"
+    sync
 
-    PASS_END=$(date +%s)
-    PASS_DURATION=$((PASS_END - PASS_START))
-    echo -e "${GREEN}Pass $pass complete (${PASS_DURATION}s)${NC}"
-    echo
+    echo "PASS_DONE: \$pass"
 done
 
-# Cleanup
-echo -e "${YELLOW}Cleaning up...${NC}"
-adb shell "rm -rf $WIPE_DIR" 2>/dev/null || true
-adb shell "sync"
+rm -rf "\$WIPE_DIR"
+sync
+echo "COMPLETE"
+REMOTE_SCRIPT
+)" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+        "=== PASS"*)
+            echo ""
+            echo -e "${BLUE}$line${NC}"
+            ;;
+        "Writing"*|"Syncing"*|"Deleting"*)
+            echo -e "  ${YELLOW}$line${NC}"
+            ;;
+        "PASS_DONE:"*)
+            pass_num="${line#PASS_DONE: }"
+            echo -e "  ${GREEN}Pass $pass_num complete${NC}"
+            ;;
+        "COMPLETE")
+            echo ""
+            ;;
+        *)
+            [ -n "$line" ] && echo "  $line"
+            ;;
+    esac
+done
 
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
 MINUTES=$((TOTAL_DURATION / 60))
-SECONDS=$((TOTAL_DURATION % 60))
+SECS=$((TOTAL_DURATION % 60))
 
-echo
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Quick Wipe Complete!${NC}"
-echo -e "${GREEN}  Total time: ${MINUTES}m ${SECONDS}s${NC}"
+echo -e "${GREEN}  Total time: ${MINUTES}m ${SECS}s${NC}"
 echo -e "${GREEN}  Passes completed: $PASSES${NC}"
-echo -e "${GREEN}  Data written: $((CHUNK_SIZE_MB * PASSES))MB${NC}"
+echo -e "${GREEN}  Data written: ${TOTAL_MB}MB${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
 echo -e "${YELLOW}Recommended next steps:${NC}"
