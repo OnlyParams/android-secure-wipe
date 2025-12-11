@@ -109,6 +109,10 @@ A standard factory reset marks data as deleted but doesn't actually overwrite it
 
 ## Prerequisites
 
+### Requirements
+
+- [Android Debug Bridge (ADB)](https://developer.android.com/tools/adb) - Part of the [Android SDK Platform Tools](https://developer.android.com/studio/releases/platform-tools), open-sourced by Google under the Apache 2.0 License
+
 ### On Your Computer
 
 **Linux (Ubuntu/Debian):**
