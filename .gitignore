@@ -1,0 +1,74 @@
+# ===========================================
+# SecureWipe Wizard - Git Ignore
+# ===========================================
+
+# ----- CONFIDENTIAL BUSINESS DOCUMENTS -----
+# Never commit business plans or sensitive docs
+docs/BUSINESS_PLAN.md
+/private/*
+*.plan.md
+*.confidential.md
+*_INTERNAL.md
+
+# ----- TAURI / RUST BUILD ARTIFACTS -----
+# Desktop app build outputs
+desktop-app/src-tauri/target/
+desktop-app/node_modules/
+desktop-app/dist/
+desktop-app/.svelte-kit/
+
+# Rust artifacts (if any outside desktop-app)
+target/
+Cargo.lock
+*.rlib
+*.rmeta
+
+# ----- NODE / NPM -----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+
+# ----- IDE / EDITOR -----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ----- ENVIRONMENT / SECRETS -----
+# Never commit credentials
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# ----- TESTING / COVERAGE -----
+coverage/
+.nyc_output/
+*.lcov
+tarpaulin-report.html
+
+# ----- OS GENERATED -----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# ----- LOGS -----
+*.log
+logs/
+
+# ----- TAURI SIGNING KEYS -----
+# Keep signing keys out of repo
+*.tauri.key
+*.tauri.key.pub
