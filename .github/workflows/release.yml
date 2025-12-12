@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - platform: ubuntu-22.04
+            args: ''
+            name: linux
+          # Windows
+          - platform: windows-latest
+            args: ''
+            name: windows
+          # macOS Intel
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+            name: macos-x64
+          # macOS Apple Silicon
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            name: macos-arm64
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-action@stable
+
+      - name: Install Rust target (macOS)
+        if: matrix.name == 'macos-x64' || matrix.name == 'macos-arm64'
+        run: |
+          if [ "${{ matrix.name }}" = "macos-x64" ]; then
+            rustup target add x86_64-apple-darwin
+          else
+            rustup target add aarch64-apple-darwin
+          fi
+
+      - name: Install dependencies (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        working-directory: desktop-app
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop-app
+          tagName: ${{ github.ref_name }}
+          releaseName: 'SecureWipe Wizard ${{ github.ref_name }}'
+          releaseBody: |
+            See [CHANGELOG](https://github.com/OnlyParams/android-secure-wipe/blob/main/docs/CHANGELOG.md) for details.
+
+            ## Installation
+
+            **Linux (Debian/Ubuntu):** `sudo dpkg -i SecureWipe_Wizard_*_amd64.deb`
+            **Linux (Fedora/RHEL):** `sudo rpm -i SecureWipe_Wizard-*.rpm`
+            **Linux (AppImage):** Make executable and run
+            **Windows:** Run the `.msi` installer
+            **macOS:** Open the `.dmg` and drag to Applications
+
+            ### Requirements
+            - ADB (Android Debug Bridge) installed
+            - USB debugging enabled on device
+            - Factory reset device BEFORE using this tool
+
+            ---
+            *This is a pre-release. Report issues at https://github.com/OnlyParams/android-secure-wipe/issues*
+          releaseDraft: false
+          prerelease: true
+          args: ${{ matrix.args }}
