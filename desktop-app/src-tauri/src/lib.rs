@@ -103,6 +103,7 @@ fn parse_adb_devices(output: &str) -> Vec<(String, String)> {
 }
 
 /// Parse df output to get storage info
+/// Note: Android df returns 1K-blocks by default (no -m flag support on some devices)
 fn parse_df_output(output: &str) -> Result<StorageInfo, String> {
     let lines: Vec<&str> = output.lines().collect();
     let data_line = lines.get(1).ok_or("No data in df output")?;
@@ -112,9 +113,10 @@ fn parse_df_output(output: &str) -> Result<StorageInfo, String> {
         return Err("Unexpected df output format".to_string());
     }
 
-    let total_mb: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let used_mb: u64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let available_mb: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+    // Values are in 1K-blocks, convert to MB
+    let total_kb: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let used_kb: u64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let available_kb: u64 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
 
     // Parse percentage (remove % sign)
     let percent_str = parts.get(4).unwrap_or(&"0%");
@@ -124,50 +126,102 @@ fn parse_df_output(output: &str) -> Result<StorageInfo, String> {
         .unwrap_or(0);
 
     Ok(StorageInfo {
-        total_mb,
-        used_mb,
-        available_mb,
+        total_mb: total_kb / 1024,
+        used_mb: used_kb / 1024,
+        available_mb: available_kb / 1024,
         percent_used,
     })
 }
 
+/// Strip ANSI escape codes from a string
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip escape sequence: ESC [ ... m
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    if nc == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Parse progress from script output
-/// Expected format: "PROGRESS: Pass 1/3 - 512MB (50%)"
+/// Script outputs: "Pass N complete" and "Passes completed: N"
 fn parse_progress_line(line: &str, total_passes: u32) -> Option<WipeProgress> {
-    if !line.contains("PROGRESS:") && !line.contains("Pass") {
+    // Strip ANSI color codes first
+    let clean_line = strip_ansi(line);
+
+    // Must contain "Pass" to be a progress line
+    if !clean_line.contains("Pass") {
         return None;
     }
 
-    // Try to extract pass number
-    let pass = if let Some(pass_str) = line.split("Pass").nth(1) {
-        pass_str
-            .trim()
-            .split(|c: char| !c.is_numeric())
-            .next()
-            .and_then(|s| s.parse().ok())
+    // Handle "Passes completed: N" format (final summary)
+    if clean_line.contains("Passes completed:") {
+        let pass = clean_line
+            .split("Passes completed:")
+            .nth(1)
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(total_passes);
+
+        return Some(WipeProgress {
+            pass,
+            total_passes,
+            percent: 100.0,
+            bytes_written: 0,
+            message: clean_line,
+            phase: "complete".to_string(),
+        });
+    }
+
+    // Handle "Pass N complete" format (per-pass update)
+    // Must match "Pass " followed by a digit (not "Passes")
+    let pass = if let Some(idx) = clean_line.find("Pass ") {
+        let after_pass = &clean_line[idx + 5..]; // Skip "Pass "
+        after_pass
+            .chars()
+            .take_while(|c| c.is_numeric())
+            .collect::<String>()
+            .parse()
             .unwrap_or(1)
     } else {
-        1
+        return None; // "Passes" without space doesn't count
     };
 
-    // Try to extract percentage
-    let percent = if let Some(pct_idx) = line.find('%') {
-        let start = line[..pct_idx]
+    // Calculate percent based on completed passes
+    let percent = if clean_line.contains("complete") {
+        (pass as f32 / total_passes as f32) * 100.0
+    } else if let Some(pct_idx) = clean_line.find('%') {
+        let start = clean_line[..pct_idx]
             .rfind(|c: char| !c.is_numeric() && c != '.')
             .map(|i| i + 1)
             .unwrap_or(0);
-        line[start..pct_idx].parse().unwrap_or(0.0)
+        clean_line[start..pct_idx].parse().unwrap_or(0.0)
     } else {
         0.0
     };
+
+    let phase = if clean_line.contains("complete") { "complete".to_string() } else { "writing".to_string() };
 
     Some(WipeProgress {
         pass,
         total_passes,
         percent,
-        bytes_written: 0, // Would need more parsing
-        message: line.to_string(),
-        phase: "writing".to_string(),
+        bytes_written: 0,
+        message: clean_line,
+        phase,
     })
 }
 
@@ -273,8 +327,10 @@ async fn check_adb() -> Result<DeviceInfo, String> {
 async fn get_storage_info(device_id: String) -> Result<StorageInfo, String> {
     let device_id = sanitize_device_id(&device_id)?;
 
+    // Note: Don't use -m flag - not supported on all Android devices (e.g., Samsung)
+    // Default output is 1K-blocks which we convert in parse_df_output
     let output = Command::new("adb")
-        .args(["-s", &device_id, "shell", "df", "-m", "/sdcard"])
+        .args(["-s", &device_id, "shell", "df", "/sdcard"])
         .output()
         .map_err(|e| format!("Failed to get storage info: {}", e))?;
 
@@ -408,31 +464,60 @@ async fn run_wipe(
 async fn run_factory_reset(device_id: String, is_final: bool) -> Result<String, String> {
     let device_id = sanitize_device_id(&device_id)?;
 
-    // Safety: This opens the factory reset screen; user must confirm on device
+    // Try intents in order of specificity - some are blocked on certain devices
+    let intents = [
+        // Most direct - but often requires system permission
+        ("android.settings.MASTER_CLEAR", "Factory Reset"),
+        // Backup & Reset settings - works on some devices
+        ("android.settings.BACKUP_AND_RESET_SETTINGS", "Backup & Reset"),
+        // Privacy settings - contains reset on some devices
+        ("android.settings.PRIVACY_SETTINGS", "Privacy Settings"),
+        // Internal storage - close to reset on Samsung
+        ("android.settings.INTERNAL_STORAGE_SETTINGS", "Storage Settings"),
+    ];
+
+    for (intent, name) in intents {
+        let output = Command::new("adb")
+            .args(["-s", &device_id, "shell", "am", "start", "-a", intent])
+            .output();
+
+        if let Ok(out) = output {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+
+            // Check if it worked (no Permission Denial or Error in output)
+            if !stdout.contains("Permission Denial")
+                && !stdout.contains("Error:")
+                && !stderr.contains("Permission Denial")
+                && !stderr.contains("SecurityException")
+            {
+                let phase = if is_final { "final" } else { "initial" };
+                return Ok(format!(
+                    "{} opened on device ({} reset).\n\
+                     Navigate to: Settings > General management > Reset > Factory data reset\n\
+                     Then confirm the reset on your device.",
+                    name, phase
+                ));
+            }
+        }
+    }
+
+    // Fallback: just open main Settings
     let output = Command::new("adb")
-        .args([
-            "-s",
-            &device_id,
-            "shell",
-            "am",
-            "start",
-            "-a",
-            "android.settings.MASTER_CLEAR",
-        ])
+        .args(["-s", &device_id, "shell", "am", "start", "-n", "com.android.settings/.Settings"])
         .output()
-        .map_err(|e| format!("Failed to trigger factory reset: {}", e))?;
+        .map_err(|e| format!("Failed to open settings: {}", e))?;
 
     if output.status.success() {
         let phase = if is_final { "final" } else { "initial" };
         Ok(format!(
-            "Factory reset screen opened ({} reset).\n\
-             Please confirm the reset on your device screen.\n\
-             Note: Some devices require PIN verification.",
+            "Settings opened on device ({} reset).\n\
+             Navigate to: General management > Reset > Factory data reset\n\
+             Then confirm the reset on your device.",
             phase
         ))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Failed to open reset screen: {}", stderr))
+        Err("Could not open settings. Please manually navigate to Settings > General management > Reset.".to_string())
     }
 }
 
@@ -656,14 +741,16 @@ mod tests {
 
     #[test]
     fn test_parse_df_output() {
-        let output = "Filesystem     1M-blocks  Used Available Use% Mounted on\n\
-                      /dev/fuse         118170 45678     72492  39% /sdcard\n";
+        // Real Samsung S24 output format (1K-blocks, not MB)
+        let output = "Filesystem     1K-blocks    Used Available Use% Mounted on\n\
+                      /dev/fuse      483563724 3229496 480203156   1% /storage/emulated\n";
 
         let info = parse_df_output(output).unwrap();
-        assert_eq!(info.total_mb, 118170);
-        assert_eq!(info.used_mb, 45678);
-        assert_eq!(info.available_mb, 72492);
-        assert_eq!(info.percent_used, 39);
+        // Values are converted from KB to MB (divided by 1024)
+        assert_eq!(info.total_mb, 483563724 / 1024);  // ~472230 MB
+        assert_eq!(info.used_mb, 3229496 / 1024);     // ~3153 MB
+        assert_eq!(info.available_mb, 480203156 / 1024); // ~468948 MB
+        assert_eq!(info.percent_used, 1);
     }
 
     #[test]
@@ -673,12 +760,33 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_ansi() {
+        let with_ansi = "\x1b[0;32mPass 2 complete\x1b[0m";
+        assert_eq!(strip_ansi(with_ansi), "Pass 2 complete");
+
+        let no_ansi = "Pass 2 complete";
+        assert_eq!(strip_ansi(no_ansi), "Pass 2 complete");
+    }
+
+    #[test]
     fn test_parse_progress_line() {
-        let line = "PROGRESS: Pass 2/3 - 1024MB (67%)";
+        // Test "Pass N complete" with ANSI codes
+        let line = "\x1b[0;32mPass 2 complete\x1b[0m";
         let progress = parse_progress_line(line, 3).unwrap();
         assert_eq!(progress.pass, 2);
         assert_eq!(progress.total_passes, 3);
-        assert!((progress.percent - 67.0).abs() < 0.1);
+        assert!((progress.percent - 66.67).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_parse_progress_line_final() {
+        // Test "Passes completed: N" format (final summary)
+        let line = "\x1b[0;32mPasses completed: 3\x1b[0m";
+        let progress = parse_progress_line(line, 3).unwrap();
+        assert_eq!(progress.pass, 3);
+        assert_eq!(progress.total_passes, 3);
+        assert_eq!(progress.percent, 100.0);
+        assert_eq!(progress.phase, "complete");
     }
 
     #[test]

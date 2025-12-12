@@ -27,7 +27,6 @@
   let wipeMode = $state('quick');
   let passes = $state(3);
   let chunkSizeMb = $state(1024);
-  let doubleReset = $state(false);
 
   // Progress state
   let wipeProgress = $state(0);
@@ -39,11 +38,6 @@
   let isWiping = $state(false);
   let wipeComplete = $state(false);
   let wipeError = $state('');
-
-  // Factory reset state
-  let isResetting = $state(false);
-  let resetMessage = $state('');
-  let finalResetDone = $state(false);
 
   // Brand-specific instructions
   let resetInstructions = $state([]);
@@ -179,7 +173,7 @@
         mode: wipeMode,
         passes: passes,
         size_mb: wipeMode === 'quick' ? chunkSizeMb : null,
-        double_reset: doubleReset,
+        double_reset: false, // Factory reset handled manually via instructions
       };
 
       const result = await invoke('run_wipe', {
@@ -197,27 +191,6 @@
       isWiping = false;
     }
   }
-
-  async function triggerFactoryReset(isFinal = false) {
-    isResetting = true;
-    resetMessage = '';
-
-    try {
-      const result = await invoke('run_factory_reset', {
-        deviceId: deviceInfo.id,
-        isFinal: isFinal
-      });
-      resetMessage = result;
-      if (isFinal) {
-        finalResetDone = true;
-      }
-    } catch (err) {
-      resetMessage = typeof err === 'string' ? err : err.message || 'Failed to trigger reset';
-    } finally {
-      isResetting = false;
-    }
-  }
-
   function nextStep() {
     if (currentStep < steps.length - 1) {
       // Special handling for confirm -> progress transition
@@ -243,8 +216,6 @@
     isWiping = false;
     wipeComplete = false;
     wipeError = '';
-    finalResetDone = false;
-    resetMessage = '';
   }
 </script>
 
@@ -294,6 +265,24 @@
       <!-- ================================================================ -->
       <div class="max-w-lg mx-auto">
         <h2 class="text-2xl font-bold text-gray-800 mb-4">Prepare Your Device</h2>
+
+        <!-- Prerequisites Notice -->
+        <div class="bg-amber-50 border border-amber-300 rounded-xl p-4 mb-4 text-left">
+          <h3 class="font-semibold text-amber-800 text-sm mb-2">Before using this tool:</h3>
+          <ul class="text-xs text-amber-700 space-y-1 ml-4 list-disc">
+            <li><strong>Back up</strong> all data you want to keep</li>
+            <li><strong>Sign out</strong> of all Google accounts</li>
+            <li><strong>Remove</strong> OEM accounts (Samsung, Xiaomi, etc.)</li>
+            <li><strong>Disable</strong> Find My Device</li>
+            <li><strong>Factory reset</strong> the phone first</li>
+          </ul>
+          <p class="text-xs text-amber-600 mt-2">
+            This tool overwrites free space <em>after</em> reset. We are not responsible for data loss.
+          </p>
+          <p class="text-xs text-amber-700 mt-1">
+            <a href="https://github.com/OnlyParams/android-secure-wipe#readme" target="_blank" class="underline hover:text-amber-900">See full instructions in docs →</a>
+          </p>
+        </div>
 
         <div class="bg-white rounded-xl shadow-lg p-6 space-y-5">
           <!-- Device Status Card -->
@@ -536,20 +525,6 @@
           </div>
         {/if}
 
-        <!-- Double Reset Toggle -->
-        <div class="mt-4 p-5 bg-white rounded-xl shadow-md">
-          <label class="flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              bind:checked={doubleReset}
-              class="w-5 h-5 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
-            />
-            <div class="ml-3">
-              <span class="font-medium text-gray-700">Double Factory Reset</span>
-              <p class="text-sm text-gray-500">Adds ~10-15 min for maximum security</p>
-            </div>
-          </label>
-        </div>
       </div>
 
     {:else if currentStep === 2}
@@ -619,15 +594,6 @@
                 <dd class="font-semibold text-gray-900">{chunkSizeMb} MB</dd>
               </div>
             {/if}
-            <div class="py-3 flex justify-between items-center">
-              <dt class="text-gray-500 flex items-center">
-                <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                  <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
-                </svg>
-                Double Reset
-              </dt>
-              <dd class="font-semibold {doubleReset ? 'text-teal-600' : 'text-gray-500'}">{doubleReset ? 'Yes' : 'No'}</dd>
-            </div>
             <div class="py-3 flex justify-between items-center">
               <dt class="text-gray-500 flex items-center">
                 <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
@@ -792,49 +758,25 @@
           </div>
 
           <!-- Factory Reset Section -->
-          <div class="text-left bg-gray-50 rounded-xl p-5 mb-6">
+          <div class="text-left bg-amber-50 border border-amber-200 rounded-xl p-5 mb-6">
             <h3 class="font-semibold text-gray-800 mb-3 flex items-center">
-              <svg class="w-5 h-5 mr-2 text-teal-600" fill="currentColor" viewBox="0 0 20 20">
+              <svg class="w-5 h-5 mr-2 text-amber-600" fill="currentColor" viewBox="0 0 20 20">
                 <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
               </svg>
-              Final Factory Reset
+              Final Step: Factory Reset
             </h3>
 
-            {#if !finalResetDone}
-              <p class="text-sm text-gray-600 mb-4">
-                Recommended: Perform a final factory reset to clear system caches and complete the wipe process.
-              </p>
+            <p class="text-sm text-gray-600 mb-3">
+              <strong>Recommended:</strong> Perform a final factory reset to clear system caches and ensure a clean handoff.
+            </p>
 
-              <button
-                onclick={() => triggerFactoryReset(true)}
-                disabled={isResetting}
-                class="w-full py-3 px-4 bg-teal-600 text-white rounded-lg hover:bg-teal-700
-                       focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2
-                       disabled:opacity-50 disabled:cursor-not-allowed transition-all
-                       flex items-center justify-center"
-              >
-                {#if isResetting}
-                  <svg class="animate-spin w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Opening Reset Screen...
-                {:else}
-                  Open Factory Reset Screen
-                {/if}
-              </button>
-
-              {#if resetMessage}
-                <p class="mt-3 text-sm text-teal-600">{resetMessage}</p>
-              {/if}
-            {:else}
-              <div class="flex items-center text-green-600">
-                <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-                </svg>
-                Factory reset screen opened on device
-              </div>
-            {/if}
+            <ol class="text-sm text-gray-600 space-y-1 ml-4 list-decimal">
+              <li>Disconnect phone from USB</li>
+              <li>Go to <strong>Settings</strong> on the phone</li>
+              <li>Navigate to factory reset (see instructions below)</li>
+              <li>Confirm the reset</li>
+              <li>Phone is now safe to trade-in/sell!</li>
+            </ol>
           </div>
 
           <!-- Brand-specific Instructions -->
@@ -858,26 +800,18 @@
           {/if}
 
           <!-- Final Checklist -->
-          <div class="text-left bg-gray-50 rounded-xl p-5">
-            <h3 class="font-semibold text-gray-800 mb-3">Before You Go</h3>
-            <ul class="space-y-3 text-sm">
-              <li class="flex items-center">
-                <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500 mr-3" />
-                <span class="text-gray-600">Remove SIM card</span>
-              </li>
-              <li class="flex items-center">
-                <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500 mr-3" />
-                <span class="text-gray-600">Remove SD card (if applicable)</span>
-              </li>
-              <li class="flex items-center">
-                <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500 mr-3" />
-                <span class="text-gray-600">Sign out of Google/Samsung account</span>
-              </li>
-              <li class="flex items-center">
-                <input type="checkbox" class="w-4 h-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500 mr-3" />
-                <span class="text-gray-600">Disable Find My Device</span>
-              </li>
-            </ul>
+          <div class="text-left bg-green-50 border border-green-200 rounded-xl p-5">
+            <h3 class="font-semibold text-green-800 mb-3">Final Steps for Trade-In</h3>
+            <p class="text-sm text-green-700 mb-3">Your device has been securely wiped. Complete these final steps:</p>
+            <ol class="space-y-2 text-sm text-gray-600 ml-4 list-decimal">
+              <li>Complete final factory reset (instructions above)</li>
+              <li>Verify setup screen appears without asking for previous Google account</li>
+              <li>Confirm no personal data, photos, or messages visible</li>
+              <li>Remove SIM card</li>
+              <li>Remove SD card (if applicable)</li>
+              <li>Clean device and power off</li>
+            </ol>
+            <p class="text-xs text-green-600 mt-3 italic">✓ Device is now ready for trade-in, sale, or donation!</p>
           </div>
 
           <!-- Wipe Another Device -->
