@@ -71,11 +71,16 @@ FILL_PERCENT=95    # Fill to 95% to avoid running out of space
 DRY_RUN=false
 AUTO_YES=false
 MIN_SPACE_MB=100   # Minimum required space in MB
+DEVICE=""          # Must be specified via -d flag
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --passes)
+        -d)
+            DEVICE="$2"
+            shift 2
+            ;;
+        -p|--passes)
             PASSES="$2"
             shift 2
             ;;
@@ -92,14 +97,21 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --help|-h)
-            echo "Usage: full_wipe.sh [OPTIONS]"
+            echo "Usage: full_wipe.sh -d DEVICE_ID [OPTIONS]"
+            echo ""
+            echo "Required:"
+            echo "  -d DEVICE     Target device serial (from 'adb devices')"
             echo ""
             echo "Options:"
-            echo "  --passes N    Number of overwrite passes (default: 3)"
-            echo "  --dry-run     Show what would be done without writing"
-            echo "  --yes, -y     Skip confirmation prompt (for automation)"
-            echo "  --version     Show version number"
-            echo "  --help        Show this help message"
+            echo "  -p, --passes N    Number of overwrite passes (default: 3)"
+            echo "  --dry-run         Show what would be done without writing"
+            echo "  --yes, -y         Skip confirmation prompt (for automation)"
+            echo "  --version         Show version number"
+            echo "  --help            Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  ./full_wipe.sh -d emulator-5554"
+            echo "  ./full_wipe.sh -d RF12345 --passes 5"
             exit 0
             ;;
         *)
@@ -235,22 +247,41 @@ if ! command -v adb &> /dev/null; then
     exit 1
 fi
 
-# Check for connected device
-log "Checking for connected device..."
-DEVICE=$(adb devices | grep -v "List" | grep "device$" | head -1 | cut -f1)
-
+# =============================================================================
+# Device Validation (CRITICAL: prevents wrong-device wipes)
+# =============================================================================
 if [ -z "$DEVICE" ]; then
-    log "${RED}Error: No authorized device found${NC}"
-    echo "Make sure:"
-    echo "  1. Phone is connected via USB"
-    echo "  2. USB debugging is enabled"
-    echo "  3. You've authorized this computer on the phone"
-    echo
-    echo "Run 'adb devices' to check connection status"
+    log "${RED}Error: No device specified${NC}"
+    echo ""
+    echo "You MUST specify a device with -d flag:"
+    echo "  ./full_wipe.sh -d DEVICE_ID"
+    echo ""
+    echo "To find your device ID, run: adb devices"
+    echo ""
+    echo "Example output:"
+    echo "  List of devices attached"
+    echo "  RF12345ABC    device"
+    echo ""
+    echo "Then run: ./full_wipe.sh -d RF12345ABC"
     exit 1
 fi
 
-log "${GREEN}Found device: $DEVICE${NC}"
+# Verify the specified device is actually connected
+log "Verifying device $DEVICE is connected..."
+if ! adb devices | grep -q "^${DEVICE}[[:space:]]*device$"; then
+    log "${RED}Error: Device '$DEVICE' not found or not authorized${NC}"
+    echo ""
+    echo "Connected devices:"
+    adb devices
+    echo ""
+    echo "Checklist:"
+    echo "  1. Is the device ID correct? (copy exactly from 'adb devices')"
+    echo "  2. Is USB debugging enabled?"
+    echo "  3. Did you authorize this computer on the phone?"
+    exit 1
+fi
+
+log "${GREEN}Confirmed device: $DEVICE${NC}"
 log_only "Device ID: $DEVICE"
 
 # From here on, use adb -s "$DEVICE" for all commands to ensure correct device targeting

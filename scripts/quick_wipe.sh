@@ -52,15 +52,20 @@ WIPE_DIR="/sdcard/wipe_temp"
 AUTO_YES=false
 DRY_RUN=false
 MIN_SPACE_MB=100    # Minimum required space in MB
+DEVICE=""           # Must be specified via -d flag
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --passes)
+        -d)
+            DEVICE="$2"
+            shift 2
+            ;;
+        -p|--passes)
             PASSES="$2"
             shift 2
             ;;
-        --size)
+        -s|--size)
             CHUNK_SIZE_MB="$2"
             shift 2
             ;;
@@ -77,21 +82,23 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --help|-h)
-            echo "Usage: quick_wipe.sh [OPTIONS]"
+            echo "Usage: quick_wipe.sh -d DEVICE_ID [OPTIONS]"
+            echo ""
+            echo "Required:"
+            echo "  -d DEVICE     Target device serial (from 'adb devices')"
             echo ""
             echo "Options:"
-            echo "  --passes N    Number of overwrite passes (default: 3, max: 20)"
-            echo "  --size MB     Size in MB to write per pass (default: 1024, range: 64-10240)"
-            echo "  --dry-run     Show what would be done without writing any data"
-            echo "  --yes, -y     Skip confirmation prompt (for automation)"
-            echo "  --version     Show version number"
-            echo "  --help        Show this help message"
+            echo "  -p, --passes N    Number of overwrite passes (default: 3, max: 20)"
+            echo "  -s, --size MB     Size in MB to write per pass (default: 1024, range: 64-10240)"
+            echo "  --dry-run         Show what would be done without writing any data"
+            echo "  --yes, -y         Skip confirmation prompt (for automation)"
+            echo "  --version         Show version number"
+            echo "  --help            Show this help message"
             echo ""
             echo "Examples:"
-            echo "  ./quick_wipe.sh                    # Default: 3 passes x 1GB"
-            echo "  ./quick_wipe.sh --passes 5        # 5 passes x 1GB"
-            echo "  ./quick_wipe.sh --size 512        # 3 passes x 512MB (faster)"
-            echo "  ./quick_wipe.sh --dry-run         # See what would happen"
+            echo "  ./quick_wipe.sh -d emulator-5554              # Default: 3 passes x 1GB"
+            echo "  ./quick_wipe.sh -d RF12345 --passes 5         # 5 passes x 1GB"
+            echo "  ./quick_wipe.sh -d 192.168.1.1:5555 --size 512  # 3 passes x 512MB"
             exit 0
             ;;
         *)
@@ -195,23 +202,41 @@ if ! command -v adb &> /dev/null; then
     exit 1
 fi
 
-# Check for connected device
-echo -e "${YELLOW}Checking for connected device...${NC}"
-DEVICE=$(adb devices | grep -v "List" | grep "device$" | head -1 | cut -f1)
-
+# =============================================================================
+# Device Validation (CRITICAL: prevents wrong-device wipes)
+# =============================================================================
 if [ -z "$DEVICE" ]; then
-    echo -e "${RED}Error: No authorized device found${NC}"
+    echo -e "${RED}Error: No device specified${NC}"
     echo ""
-    echo "Checklist:"
-    echo "  1. Is your phone connected via USB cable?"
-    echo "  2. Is USB debugging enabled? (Settings -> Developer Options -> USB Debugging)"
-    echo "  3. Did you tap 'Allow' on the phone when it asked to trust this computer?"
+    echo "You MUST specify a device with -d flag:"
+    echo "  ./quick_wipe.sh -d DEVICE_ID"
     echo ""
-    echo "Still stuck? Run 'adb devices' to see what's detected."
+    echo "To find your device ID, run: adb devices"
+    echo ""
+    echo "Example output:"
+    echo "  List of devices attached"
+    echo "  RF12345ABC    device"
+    echo ""
+    echo "Then run: ./quick_wipe.sh -d RF12345ABC"
     exit 1
 fi
 
-echo -e "${GREEN}Found device: $DEVICE${NC}"
+# Verify the specified device is actually connected
+echo -e "${YELLOW}Verifying device $DEVICE is connected...${NC}"
+if ! adb devices | grep -q "^${DEVICE}[[:space:]]*device$"; then
+    echo -e "${RED}Error: Device '$DEVICE' not found or not authorized${NC}"
+    echo ""
+    echo "Connected devices:"
+    adb devices
+    echo ""
+    echo "Checklist:"
+    echo "  1. Is the device ID correct? (copy exactly from 'adb devices')"
+    echo "  2. Is USB debugging enabled?"
+    echo "  3. Did you authorize this computer on the phone?"
+    exit 1
+fi
+
+echo -e "${GREEN}Confirmed device: $DEVICE${NC}"
 
 # From here on, use adb -s "$DEVICE" for all commands to ensure correct device targeting
 
