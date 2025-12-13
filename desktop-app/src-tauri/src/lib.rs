@@ -158,7 +158,10 @@ fn strip_ansi(s: &str) -> String {
 }
 
 /// Parse progress from script output
-/// Script outputs: "Pass N complete" and "Passes completed: N"
+/// Script outputs:
+/// - "PROGRESS: Pass N - XMB / YMB (Z%)" (within-pass progress from full wipe)
+/// - "Pass N complete" (per-pass completion)
+/// - "Passes completed: N" (final summary)
 fn parse_progress_line(line: &str, total_passes: u32) -> Option<WipeProgress> {
     // Strip ANSI color codes first
     let clean_line = strip_ansi(line);
@@ -188,7 +191,7 @@ fn parse_progress_line(line: &str, total_passes: u32) -> Option<WipeProgress> {
 
     // Handle "Pass N complete" format (per-pass update)
     // Must match "Pass " followed by a digit (not "Passes")
-    let pass = if let Some(idx) = clean_line.find("Pass ") {
+    let pass: u32 = if let Some(idx) = clean_line.find("Pass ") {
         let after_pass = &clean_line[idx + 5..]; // Skip "Pass "
         after_pass
             .chars()
@@ -200,15 +203,21 @@ fn parse_progress_line(line: &str, total_passes: u32) -> Option<WipeProgress> {
         return None; // "Passes" without space doesn't count
     };
 
-    // Calculate percent based on completed passes
+    // Calculate overall percent based on completed passes and within-pass progress
     let percent = if clean_line.contains("complete") {
+        // Pass complete: overall = (pass / total) * 100
         (pass as f32 / total_passes as f32) * 100.0
     } else if let Some(pct_idx) = clean_line.find('%') {
+        // Within-pass progress: extract the percentage from the line
         let start = clean_line[..pct_idx]
             .rfind(|c: char| !c.is_numeric() && c != '.')
             .map(|i| i + 1)
             .unwrap_or(0);
-        clean_line[start..pct_idx].parse().unwrap_or(0.0)
+        let within_pass_pct: f32 = clean_line[start..pct_idx].parse().unwrap_or(0.0);
+        // Calculate overall progress: ((completed_passes + within_pass/100) / total) * 100
+        // Pass 1 at 50% with 3 passes = ((0 + 0.5) / 3) * 100 = 16.7%
+        let completed_passes = pass.saturating_sub(1) as f32;
+        ((completed_passes + within_pass_pct / 100.0) / total_passes as f32) * 100.0
     } else {
         0.0
     };
@@ -793,6 +802,25 @@ mod tests {
     fn test_parse_progress_line_no_match() {
         let line = "Starting wipe operation...";
         assert!(parse_progress_line(line, 3).is_none());
+    }
+
+    #[test]
+    fn test_parse_progress_line_full_wipe_format() {
+        // Test "PROGRESS: Pass N - XMB / YMB (Z%)" format from full_wipe.sh
+        let line = "\x1b[1;33mPROGRESS: Pass 1 - 256MB / 50000MB (0%)\x1b[0m";
+        let progress = parse_progress_line(line, 3).unwrap();
+        assert_eq!(progress.pass, 1);
+        assert_eq!(progress.total_passes, 3);
+        // Pass 1 at 0% with 3 passes = ((0 + 0) / 3) * 100 = 0%
+        assert!(progress.percent < 1.0);
+        assert_eq!(progress.phase, "writing");
+
+        // Test mid-pass progress
+        let line2 = "PROGRESS: Pass 2 - 25000MB / 50000MB (50%)";
+        let progress2 = parse_progress_line(line2, 3).unwrap();
+        assert_eq!(progress2.pass, 2);
+        // Pass 2 at 50% with 3 passes = ((1 + 0.5) / 3) * 100 = 50%
+        assert!((progress2.percent - 50.0).abs() < 1.0);
     }
 
     #[test]

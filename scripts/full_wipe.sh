@@ -451,9 +451,9 @@ REMOTE_SCRIPT
             log_only "$line"
             ;;
         "PROGRESS:"*)
-            # Extract and display progress
+            # Extract and display progress - use echo (not printf \r) for Tauri to capture
             progress_info="${line#PROGRESS: }"
-            printf "\r${YELLOW}  %s${NC}    " "$progress_info"
+            echo -e "${YELLOW}PROGRESS: ${progress_info}${NC}"
             log_only "$progress_info"
             ;;
         "PASS_COMPLETE:"*)
