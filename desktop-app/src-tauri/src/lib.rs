@@ -412,6 +412,7 @@ async fn run_wipe(
         .arg("-p")
         .arg(passes.to_string())
         .arg("-y") // Auto-confirm
+        .arg("--raw") // Raw output mode for real-time streaming (no pipe buffering)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

@@ -51,6 +51,7 @@ CHUNK_SIZE_MB=1024  # 1GB per pass
 WIPE_DIR="/sdcard/wipe_temp"
 AUTO_YES=false
 DRY_RUN=false
+RAW_OUTPUT=false    # Raw mode for Tauri - no pipe buffering
 MIN_SPACE_MB=100    # Minimum required space in MB
 DEVICE=""           # Must be specified via -d flag
 
@@ -75,6 +76,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --raw)
+            RAW_OUTPUT=true
             shift
             ;;
         --version|-v)
@@ -294,57 +299,62 @@ echo
 echo -e "${BLUE}Starting quick wipe (runs on-device for speed)...${NC}"
 START_TIME=$(date +%s)
 
-# Run entire wipe on-device in single adb shell session
-adb -s "$DEVICE" shell "$(cat <<REMOTE_SCRIPT
-#!/system/bin/sh
-WIPE_DIR="$WIPE_DIR"
+# Build on-device script
+REMOTE_SCRIPT="#!/system/bin/sh
+WIPE_DIR=\"$WIPE_DIR\"
 PASSES=$PASSES
 CHUNK_SIZE_MB=$CHUNK_SIZE_MB
 
-mkdir -p "\$WIPE_DIR"
+mkdir -p \"\$WIPE_DIR\"
 
 for pass in \$(seq 1 \$PASSES); do
-    echo "=== PASS \$pass of \$PASSES ==="
-    FILENAME="\$WIPE_DIR/wipe_pass_\${pass}.bin"
+    echo \"=== PASS \$pass of \$PASSES ===\"
+    FILENAME=\"\$WIPE_DIR/wipe_pass_\${pass}.bin\"
 
-    echo "Writing \${CHUNK_SIZE_MB}MB of random data..."
-    dd if=/dev/urandom of="\$FILENAME" bs=1048576 count=\$CHUNK_SIZE_MB 2>&1 | grep -v records || true
+    echo \"Writing \${CHUNK_SIZE_MB}MB of random data...\"
+    dd if=/dev/urandom of=\"\$FILENAME\" bs=1048576 count=\$CHUNK_SIZE_MB 2>&1 | grep -v records || true
 
-    echo "Syncing..."
+    echo \"Syncing...\"
     sync
 
-    echo "Deleting pass \$pass data..."
-    rm -f "\$FILENAME"
+    echo \"Deleting pass \$pass data...\"
+    rm -f \"\$FILENAME\"
     sync
 
-    echo "PASS_DONE: \$pass"
+    echo \"Pass \$pass complete\"
 done
 
-rm -rf "\$WIPE_DIR"
+rm -rf \"\$WIPE_DIR\"
 sync
-echo "COMPLETE"
-REMOTE_SCRIPT
-)" 2>&1 | while IFS= read -r line; do
-    case "$line" in
-        "=== PASS"*)
-            echo ""
-            echo -e "${BLUE}$line${NC}"
-            ;;
-        "Writing"*|"Syncing"*|"Deleting"*)
-            echo -e "  ${YELLOW}$line${NC}"
-            ;;
-        "PASS_DONE:"*)
-            pass_num="${line#PASS_DONE: }"
-            echo -e "  ${GREEN}Pass $pass_num complete${NC}"
-            ;;
-        "COMPLETE")
-            echo ""
-            ;;
-        *)
-            [ -n "$line" ] && echo "  $line"
-            ;;
-    esac
-done
+echo \"Passes completed: \$PASSES\"
+"
+
+if [ "$RAW_OUTPUT" = true ]; then
+    # Raw mode for Tauri - direct output without pipe buffering for real-time streaming
+    adb -s "$DEVICE" shell "$REMOTE_SCRIPT" 2>&1
+else
+    # Terminal mode - nice formatting with colors (may have buffering)
+    adb -s "$DEVICE" shell "$REMOTE_SCRIPT" 2>&1 | while IFS= read -r line; do
+        case "$line" in
+            "=== PASS"*)
+                echo ""
+                echo -e "${BLUE}$line${NC}"
+                ;;
+            "Writing"*|"Syncing"*|"Deleting"*)
+                echo -e "  ${YELLOW}$line${NC}"
+                ;;
+            "Pass "*" complete")
+                echo -e "  ${GREEN}$line${NC}"
+                ;;
+            "Passes completed:"*)
+                echo ""
+                ;;
+            *)
+                [ -n "$line" ] && echo "  $line"
+                ;;
+        esac
+    done
+fi
 
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))

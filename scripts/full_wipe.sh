@@ -70,6 +70,7 @@ LOG_FILE="phone_wipe.log"
 FILL_PERCENT=95    # Fill to 95% to avoid running out of space
 DRY_RUN=false
 AUTO_YES=false
+RAW_OUTPUT=false   # Raw mode for Tauri - no pipe buffering
 MIN_SPACE_MB=100   # Minimum required space in MB
 DEVICE=""          # Must be specified via -d flag
 
@@ -90,6 +91,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --yes|-y)
             AUTO_YES=true
+            shift
+            ;;
+        --raw)
+            RAW_OUTPUT=true
             shift
             ;;
         --version|-v)
@@ -374,21 +379,21 @@ START_TIME=$(date +%s)
 # This dramatically reduces overhead vs per-chunk adb calls
 log "Executing wipe passes on device (this runs entirely on-device for speed)..."
 
-adb -s "$DEVICE" shell "$(cat <<REMOTE_SCRIPT
-#!/system/bin/sh
+# Build the on-device script
+REMOTE_SCRIPT="#!/system/bin/sh
 # On-device wipe script - runs entirely on phone for maximum speed
 
-WIPE_DIR="$WIPE_DIR"
+WIPE_DIR=\"$WIPE_DIR\"
 TARGET_MB=$TARGET_MB
 PASSES=$PASSES
 CHUNK_MB=64  # Larger chunks = fewer files = less overhead
 
-mkdir -p "\$WIPE_DIR"
+mkdir -p \"\$WIPE_DIR\"
 
 for pass in \$(seq 1 \$PASSES); do
-    echo "=== PASS \$pass of \$PASSES ==="
-    PASS_DIR="\$WIPE_DIR/pass_\$pass"
-    mkdir -p "\$PASS_DIR"
+    echo \"=== PASS \$pass of \$PASSES ===\"
+    PASS_DIR=\"\$WIPE_DIR/pass_\$pass\"
+    mkdir -p \"\$PASS_DIR\"
 
     written=0
     chunk=0
@@ -404,77 +409,84 @@ for pass in \$(seq 1 \$PASSES); do
         fi
 
         # Write random data - bs=1m for 1MB blocks
-        dd if=/dev/urandom of="\$PASS_DIR/chunk_\${chunk}.bin" bs=1048576 count=\$this_chunk 2>/dev/null
+        dd if=/dev/urandom of=\"\$PASS_DIR/chunk_\${chunk}.bin\" bs=1048576 count=\$this_chunk 2>/dev/null
 
         written=\$((written + this_chunk))
 
         # Progress update every ~256MB
         if [ \$((written % 256)) -lt \$CHUNK_MB ]; then
             pct=\$((written * 100 / TARGET_MB))
-            echo "PROGRESS: Pass \$pass - \${written}MB / \${TARGET_MB}MB (\${pct}%)"
+            echo \"PROGRESS: Pass \$pass - \${written}MB / \${TARGET_MB}MB (\${pct}%)\"
         fi
 
         # Check available space - stop if critically low
         avail=\$(df /sdcard 2>/dev/null | tail -1 | awk '{print \$4}')
         # Remove any suffix and check if under 100MB
-        avail_num=\$(echo "\$avail" | sed 's/[^0-9]//g')
-        if [ -n "\$avail_num" ] && [ "\$avail_num" -lt 100 ] 2>/dev/null; then
-            echo "Storage critically low, stopping pass early"
+        avail_num=\$(echo \"\$avail\" | sed 's/[^0-9]//g')
+        if [ -n \"\$avail_num\" ] && [ \"\$avail_num\" -lt 100 ] 2>/dev/null; then
+            echo \"Storage critically low, stopping pass early\"
             break
         fi
     done
 
-    echo "Syncing pass \$pass..."
+    echo \"Syncing pass \$pass...\"
     sync
     sleep 1
 
-    echo "Cleaning up pass \$pass..."
-    rm -rf "\$PASS_DIR"
+    echo \"Cleaning up pass \$pass...\"
+    rm -rf \"\$PASS_DIR\"
     sync
     sleep 1
 
-    echo "PASS_COMPLETE: Pass \$pass done - wrote \${written}MB"
+    echo \"PASS_COMPLETE: Pass \$pass done - wrote \${written}MB\"
 done
 
 # Final cleanup
-rm -rf "\$WIPE_DIR"
+rm -rf \"\$WIPE_DIR\"
 sync
 
-echo "WIPE_COMPLETE: All \$PASSES passes finished"
-REMOTE_SCRIPT
-)" 2>&1 | while IFS= read -r line; do
-    # Parse and display progress from device
-    case "$line" in
-        "=== PASS"*)
-            echo ""
-            echo -e "${BLUE}$line${NC}"
-            log_only "$line"
-            ;;
-        "PROGRESS:"*)
-            # Extract and display progress - use echo (not printf \r) for Tauri to capture
-            progress_info="${line#PROGRESS: }"
-            echo -e "${YELLOW}PROGRESS: ${progress_info}${NC}"
-            log_only "$progress_info"
-            ;;
-        "PASS_COMPLETE:"*)
-            echo ""
-            pass_info="${line#PASS_COMPLETE: }"
-            log "${GREEN}  $pass_info${NC}"
-            ;;
-        "WIPE_COMPLETE:"*)
-            echo ""
-            log "${GREEN}${line#WIPE_COMPLETE: }${NC}"
-            ;;
-        "Syncing"*|"Cleaning"*)
-            echo ""
-            echo -e "${YELLOW}  $line${NC}"
-            ;;
-        *)
-            # Log other output
-            [ -n "$line" ] && log_only "device: $line"
-            ;;
-    esac
-done
+echo \"WIPE_COMPLETE: All \$PASSES passes finished\"
+"
+
+if [ "$RAW_OUTPUT" = true ]; then
+    # Raw mode for Tauri - direct output without pipe buffering for real-time streaming
+    adb -s "$DEVICE" shell "$REMOTE_SCRIPT" 2>&1
+else
+    # Terminal mode - nice formatting with colors (may have buffering)
+    adb -s "$DEVICE" shell "$REMOTE_SCRIPT" 2>&1 | while IFS= read -r line; do
+        # Parse and display progress from device
+        case "$line" in
+            "=== PASS"*)
+                echo ""
+                echo -e "${BLUE}$line${NC}"
+                log_only "$line"
+                ;;
+            "PROGRESS:"*)
+                # Extract and display progress
+                progress_info="${line#PROGRESS: }"
+                echo -e "${YELLOW}PROGRESS: ${progress_info}${NC}"
+                log_only "$progress_info"
+                ;;
+            "PASS_COMPLETE:"*)
+                echo ""
+                pass_info="${line#PASS_COMPLETE: }"
+                log "${GREEN}  $pass_info${NC}"
+                ;;
+            "WIPE_COMPLETE:"*)
+                echo ""
+                log "${GREEN}${line#WIPE_COMPLETE: }${NC}"
+                ;;
+            "Syncing"*|"Cleaning"*)
+                echo ""
+                echo -e "${YELLOW}  $line${NC}"
+                ;;
+            *)
+                # Log other output
+                [ -n "$line" ] && log_only "device: $line"
+                ;;
+        esac
+    done
+fi
 
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
