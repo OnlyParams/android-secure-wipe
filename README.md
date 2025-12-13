@@ -491,6 +491,13 @@ Built with [Tauri](https://tauri.app) + Svelte. Branded: **OnlyParams, a divisio
 
 Found an issue or have a suggestion? Open an issue or submit a PR.
 
+## Credits
+
+This project was built collaboratively by:
+- **McJuniorstein** — Project lead, testing, and direction
+- **Claude Opus 4.5** (Anthropic) — Architecture, Rust/Tauri implementation, and documentation
+- **Grok 4.1** (xAI) — Research and planning contributions
+
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
