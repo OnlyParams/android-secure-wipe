@@ -400,16 +400,77 @@ This is normal - writing random data to flash storage takes time.
 
 ## Desktop App (SecureWipe Wizard)
 
-**Coming Soon:** A user-friendly desktop application for those who prefer a graphical interface.
+SecureWipe Wizard is a free, open-source desktop tool for securely wiping Android devices.
+**Important**: This tool overwrites free space with random data. It is intended to be used **after** a factory reset for maximum security. We are **not responsible** for any data loss, device issues, or unintended consequences.
 
-### Features
+### Download
 
-- Step-by-step wizard interface
-- Automatic device detection
-- Quick Wipe and Full Wipe modes
-- Double Factory Reset option for maximum security
-- Progress tracking with real-time logs
-- Cross-platform: Linux, Windows, macOS
+Download the latest version from GitHub Releases:
+https://github.com/OnlyParams/android-secure-wipe/releases
+
+Choose the installer for your operating system:
+- **Windows**: `.msi` installer — double-click to install
+- **macOS**: `.dmg` — open and drag to Applications folder
+- **Linux**:
+  - `.deb` — for Ubuntu/Debian (`sudo dpkg -i securewipe-wizard_*.deb`)
+  - `.rpm` — for Fedora/RHEL (`sudo rpm -i securewipe-wizard-*.rpm`)
+  - `.AppImage` — make executable and run (`chmod +x SecureWipe*.AppImage && ./SecureWipe*.AppImage`)
+
+### Desktop App Prerequisites
+
+1. **Install ADB** (Android Debug Bridge):
+   - **Linux**: `sudo apt install adb`
+   - **Windows**: Download Platform-Tools from https://developer.android.com/tools/releases/platform-tools
+   - **macOS**: `brew install android-platform-tools`
+
+2. **On your Android device**:
+   - Enable **Developer Options** (Settings → About phone → tap Build number 7 times)
+   - Enable **USB Debugging** (Developer Options)
+   - Use a **data-capable USB cable** (not charge-only)
+
+### Usage — Step by Step
+
+1. **Launch SecureWipe Wizard**
+2. **Connect your Android phone via USB**
+3. **Step 1: Prepare**
+   - Click "Check Connection"
+   - Device model and storage info should appear
+   - Ensure the correct device is shown
+
+4. **Step 2: Options**
+   - Choose mode:
+     - **Quick Wipe** (~15–30 minutes): 3 passes × 1GB chunks — recommended for most users
+     - **Full Wipe** (1–3+ hours): 3 passes across ~95% of free space — maximum thoroughness
+   - Adjust passes if desired (1–10)
+
+5. **Step 3: Confirm**
+   - Review settings
+   - Click **Start Wipe**
+
+6. **Step 4: Progress**
+   - Watch real-time progress
+   - You can **Abort** at any time (temporary files will be cleaned)
+
+7. **Step 5: Done**
+   - Follow on-screen checklist:
+     - Perform a **factory reset** (Settings → General management → Reset)
+     - Verify no data remains (optional recovery tool test)
+     - Remove SIM/SD cards
+     - Power off device
+
+### Safety Notes
+
+- **Always backup important data first** — this tool is irreversible
+- **Sign out of all accounts** (Google, Samsung, etc.) before wiping
+- **Disable Find My Device / FRP** if possible
+- **Samsung devices**: Some storage reporting quirks are handled automatically
+- **Multiple devices**: The app will error if more than one is connected — unplug others
+
+### Known Limitations
+
+- No auto-updates yet (check GitHub for new versions)
+- Unsigned binaries may trigger Gatekeeper (macOS) or SmartScreen (Windows) warnings — click "More info" → "Run anyway"
+- Tested primarily on Samsung Galaxy S24 — works on most Android 10+ devices
 
 ### Build from Source
 
