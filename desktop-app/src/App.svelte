@@ -46,6 +46,9 @@
   let unlistenProgress = null;
   let unlistenComplete = null;
 
+  // Log container ref for auto-scroll
+  let logContainer = $state(null);
+
   // ============================================================================
   // Computed Values
   // ============================================================================
@@ -116,6 +119,13 @@
   function addLog(message) {
     const timestamp = new Date().toLocaleTimeString();
     wipeLog = [...wipeLog, `[${timestamp}] ${message}`];
+    // Auto-scroll to bottom after adding log
+    if (logContainer) {
+      // Use setTimeout to ensure DOM has updated
+      setTimeout(() => {
+        logContainer.scrollTop = logContainer.scrollHeight;
+      }, 0);
+    }
   }
 
   async function checkAdbStatus() {
@@ -703,7 +713,7 @@
           {/if}
 
           <!-- Log Output -->
-          <div class="bg-gray-900 rounded-lg p-4 h-40 overflow-y-auto font-mono text-xs">
+          <div bind:this={logContainer} class="bg-gray-900 rounded-lg p-4 h-40 overflow-y-auto font-mono text-xs">
             {#each wipeLog as log}
               <p class="text-green-400 leading-relaxed">{log}</p>
             {:else}
