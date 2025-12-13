@@ -44,6 +44,14 @@ coverage/
 *.lcov
 tarpaulin-report.html
 
+# ----- TEST SCREENSHOTS / VIDEOS -----
+desktop-app/test*.png
+desktop-app/beta_view.png
+desktop-app/demo-video.mkv
+*.mkv
+2025-*.png
+Secure_Wipe_2.png
+
 # ----- OS GENERATED -----
 .DS_Store
 .DS_Store?

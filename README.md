@@ -403,6 +403,8 @@ This is normal - writing random data to flash storage takes time.
 SecureWipe Wizard is a free, open-source desktop tool for securely wiping Android devices.
 **Important**: This tool overwrites free space with random data. It is intended to be used **after** a factory reset for maximum security. We are **not responsible** for any data loss, device issues, or unintended consequences.
 
+![SecureWipe Wizard Screenshot](docs/screenshot-desktop-app.png)
+
 ### Download
 
 Download the latest version from GitHub Releases:
