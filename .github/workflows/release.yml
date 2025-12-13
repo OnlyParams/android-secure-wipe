@@ -41,7 +41,7 @@ jobs:
           node-version: 20
 
       - name: Install Rust stable
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Rust target (macOS)
         if: matrix.name == 'macos-x64' || matrix.name == 'macos-arm64'
