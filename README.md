@@ -1,4 +1,15 @@
-# What Really Happens to Your Trade-In Phone (And Why You Should Wipe It Yourself)
+# Android Secure Wipe
+
+**Securely erase your Android phone before trade-in or sale.** Factory resets don't actually overwrite your data - this tool does.
+
+![SecureWipe Wizard](docs/screenshot-desktop-app.png)
+
+### Quick Links
+- [Download Desktop App](#download) | [CLI Scripts](#quick-start-tldr) | [Full Guide](#secure-android-phone-wipe-guide)
+
+---
+
+## Why This Exists
 
 > **Note:** This guide is for **Android devices only**. iOS users benefit from Apple's Secure Enclave - a factory reset properly destroys encryption keys on iPhones. Just remove your accounts first and you're good.
 
@@ -402,8 +413,6 @@ This is normal - writing random data to flash storage takes time.
 
 SecureWipe Wizard is a free, open-source desktop tool for securely wiping Android devices.
 **Important**: This tool overwrites free space with random data. It is intended to be used **after** a factory reset for maximum security. We are **not responsible** for any data loss, device issues, or unintended consequences.
-
-![SecureWipe Wizard Screenshot](docs/screenshot-desktop-app.png)
 
 ### Download
 
