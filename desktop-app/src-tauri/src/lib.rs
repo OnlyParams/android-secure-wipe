@@ -12,10 +12,13 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-// Note: Arc, AtomicBool, Ordering reserved for future cancellation support
-// use std::sync::atomic::{AtomicBool, Ordering};
-// use std::sync::Arc;
-use tauri::Emitter;
+use std::sync::Mutex;
+use tauri::{Emitter, State};
+
+// Global state for managing the running wipe process
+struct WipeState {
+    device_id: Mutex<Option<String>>,
+}
 
 // ============================================================================
 // Data Structures
@@ -355,10 +358,17 @@ async fn get_storage_info(device_id: String) -> Result<StorageInfo, String> {
 #[tauri::command]
 async fn run_wipe(
     window: tauri::Window,
+    state: State<'_, WipeState>,
     device_id: String,
     config: WipeConfig,
 ) -> Result<String, String> {
     let device_id = sanitize_device_id(&device_id)?;
+
+    // Store device ID for abort functionality
+    {
+        let mut dev_lock = state.device_id.lock().unwrap();
+        *dev_lock = Some(device_id.clone());
+    }
 
     // Validate inputs
     let passes = config.passes.clamp(1, 20);
@@ -449,6 +459,12 @@ async fn run_wipe(
         .wait()
         .map_err(|e| format!("Wipe process error: {}", e))?;
 
+    // Clear wipe state
+    {
+        let mut dev_lock = state.device_id.lock().unwrap();
+        *dev_lock = None;
+    }
+
     // Emit completion event
     let _ = window.emit(
         "wipe-complete",
@@ -467,6 +483,62 @@ async fn run_wipe(
     } else {
         Err("Wipe failed. Check device connection and try again.".to_string())
     }
+}
+
+/// Abort a running wipe operation
+#[tauri::command]
+async fn abort_wipe(
+    window: tauri::Window,
+    state: State<'_, WipeState>,
+) -> Result<String, String> {
+    // Get the device ID
+    let device_id = {
+        let dev_lock = state.device_id.lock().unwrap();
+        dev_lock.clone()
+    };
+
+    let device_id = match device_id {
+        Some(id) => id,
+        None => return Err("No wipe operation in progress.".to_string()),
+    };
+
+    // Kill the wipe scripts on the host
+    let _ = Command::new("pkill")
+        .arg("-f")
+        .arg("wipe.sh")
+        .output();
+
+    // Kill dd process on the device
+    let _ = Command::new("adb")
+        .arg("-s")
+        .arg(&device_id)
+        .arg("shell")
+        .arg("pkill -f 'dd if=/dev/urandom'")
+        .output();
+
+    // Clean up temp files on the device
+    let _ = Command::new("adb")
+        .arg("-s")
+        .arg(&device_id)
+        .arg("shell")
+        .arg("rm -rf /sdcard/wipe_temp/")
+        .output();
+
+    // Clear wipe state
+    {
+        let mut dev_lock = state.device_id.lock().unwrap();
+        *dev_lock = None;
+    }
+
+    // Emit abort event
+    let _ = window.emit(
+        "wipe-aborted",
+        serde_json::json!({
+            "message": "Wipe operation aborted and cleaned up."
+        }),
+    );
+
+    Ok("Wipe aborted. Temporary files cleaned up.".to_string())
 }
 
 /// Trigger factory reset via ADB (opens settings screen)
@@ -690,11 +762,15 @@ async fn cleanup_wipe_files(device_id: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(WipeState {
+            device_id: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             check_adb_status,
             check_adb,
             get_storage_info,
             run_wipe,
+            abort_wipe,
             run_factory_reset,
             check_device_connected,
             get_instructions,
