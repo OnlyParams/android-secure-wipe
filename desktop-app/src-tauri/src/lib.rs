@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 // Global state for managing the running wipe process
 struct WipeState {
@@ -758,6 +758,40 @@ async fn cleanup_wipe_files(device_id: String) -> Result<String, String> {
 // App Setup
 // ============================================================================
 
+/// Cleanup any running wipe processes and temp files
+fn cleanup_on_exit(state: &WipeState) {
+    // Get the device ID if a wipe was in progress
+    let device_id = {
+        let dev_lock = state.device_id.lock().unwrap();
+        dev_lock.clone()
+    };
+
+    // Kill any running wipe scripts
+    let _ = Command::new("pkill")
+        .arg("-f")
+        .arg("wipe.sh")
+        .output();
+
+    // If we have a device ID, clean up device-side processes and files
+    if let Some(device_id) = device_id {
+        // Kill dd process on device
+        let _ = Command::new("adb")
+            .arg("-s")
+            .arg(&device_id)
+            .arg("shell")
+            .arg("pkill -f 'dd if=/dev/urandom'")
+            .output();
+
+        // Clean up temp files
+        let _ = Command::new("adb")
+            .arg("-s")
+            .arg(&device_id)
+            .arg("shell")
+            .arg("rm -rf /sdcard/wipe_temp/")
+            .output();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -777,6 +811,14 @@ pub fn run() {
             revoke_adb,
             cleanup_wipe_files,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // Cleanup when window is closed
+                if let Some(state) = window.try_state::<WipeState>() {
+                    cleanup_on_exit(&state);
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
