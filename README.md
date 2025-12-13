@@ -8,14 +8,15 @@
 
 ## The Problem
 
-**Factory reset ≠ secure erase.** When you "wipe" your phone, the data isn't overwritten - it's just marked as deleted. With basic forensic tools, anyone can recover it.
+**Factory reset ≠ secure erase.** When you "wipe" your phone, the data isn't overwritten - it's just marked as deleted. With forensic tools, anyone can recover it.
 
-### This isn't theoretical:
+### The research is clear:
 
-| Study | Finding |
-|-------|---------|
-| **University of Hertfordshire (2018)** | 19% of "wiped" phones on eBay still had personal data - emails, intimate photos, tax documents |
-| **Avast (2014)** | From just 20 factory-reset phones, researchers recovered **40,000+ photos**, emails, texts, GPS data, and a loan application |
+| Source | Finding |
+|--------|---------|
+| **[Blankesteijn et al. (2023)](https://doi.org/10.1016/j.fsidi.2023.301587)** | Tested Android 11 & 12 - encrypted data remnants persist after factory reset. Multiple partitions not wiped. **Best Paper Award 2023.** |
+| **[NIST SP 800-88 Rev. 2 (Sept 2025)](https://csrc.nist.gov/pubs/sp/800/88/r2/final)** | US government classifies factory reset as "Clear" (insufficient). Recommends "Purge" (overwriting) for devices leaving your control. |
+| **[University of Hertfordshire (2019)](https://www.comparitech.com/blog/information-security/personal-data-left-on-mobile-phones/)** | 19% of secondhand phones on eBay still had recoverable personal data. |
 
 Once your trade-in leaves your hands, you have zero control over who touches it. Take the extra 15 minutes to wipe it properly.
 
@@ -81,24 +82,42 @@ But "probably not" isn't "impossible." You're betting against every underpaid te
 
 ## The Documented Evidence
 
-### University of Hertfordshire / Comparitech Study (2018)
+### Blankesteijn et al. (2023) — Best Paper Award
 
-Researchers purchased 100 secondhand phones on eBay and found that **19% still contained data from previous owners**, with 17% having personally identifiable information - including private emails, intimate photos, tax documents, and bank account details.
+Published in *Forensic Science International: Digital Investigation*, this peer-reviewed study tested **modern Android 11 & 12 devices** and found:
+
+- **Encrypted data remnants persist** in byte form after factory reset
+- **Multiple partitions are NOT wiped** during standard factory reset
+- Device usage information may still be recoverable
+- Factory reset does NOT equal complete data destruction
+
+This isn't old research on ancient Android versions - this is current, award-winning science on the phones people use today.
+
+[Full Paper (PDF)](https://pure.uva.nl/ws/files/139228342/Assessing_data_remnants_in_modern_smartphones.pdf) | [DOI](https://doi.org/10.1016/j.fsidi.2023.301587)
+
+### NIST SP 800-88 Rev. 2 (September 2025)
+
+The U.S. National Institute of Standards and Technology just updated their **Guidelines for Media Sanitization**:
+
+- Factory reset classified as **"Clear"** method - pointers removed, data remains
+- "Clear" only suitable for devices **staying within your organization**
+- Recommends **"Purge"** method when devices leave your control
+- Purge = cryptographic erasure OR **overwriting** (what this tool does)
+
+This is official U.S. government guidance used by enterprises, military, and federal agencies.
+
+[NIST Publication](https://csrc.nist.gov/pubs/sp/800/88/r2/final) | [Full PDF](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-88r2.pdf)
+
+### University of Hertfordshire / Comparitech (2019)
+
+Real-world test purchasing **100 secondhand phones** from eBay:
+
+- **19% still had previous owner data**
+- **17% had enough to identify the previous owner**
+- Data included: emails, texts, photos, contacts, browsing history
+- Recovered using publicly available forensic tools
 
 [Source](https://www.comparitech.com/blog/information-security/personal-data-left-on-mobile-phones/)
-
-### Avast Study (2014)
-
-From just **20 used Android phones** purchased on eBay - all factory reset - Avast recovered:
-- More than **40,000 personal photos**
-- Hundreds of emails and text messages
-- Over 1,000 Google searches
-- A completed loan application
-- The identities of four previous owners
-
-**How they did it:** Using standard forensic tools - FTK Imager for disk imaging, `dd` for raw disk cloning, and Scalpel for data carving - researchers extracted data from "unallocated space" that standard deletion doesn't touch.
-
-[Source](https://blog.avast.com/2014/07/09/android-foreniscs-pt-2-how-we-recovered-erased-data/)
 
 ### The Real Risks
 
