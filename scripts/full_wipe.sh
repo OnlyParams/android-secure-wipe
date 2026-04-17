@@ -9,6 +9,10 @@
 #
 # CHANGELOG:
 # ----------
+# v2.4.0 (2026-04-17)
+#   - SECURITY: Check dd exit codes instead of suppressing stderr (Fixes #11)
+#   - Wipe now aborts on write failure instead of silently continuing
+#
 # v2.3.0 (2026-04-16)
 #   - SECURITY: Added device serial format validation (Fixes #10)
 #   - Rejects dangerous shell characters to prevent injection attacks
@@ -422,7 +426,10 @@ for pass in \$(seq 1 \$PASSES); do
         fi
 
         # Write random data - bs=1m for 1MB blocks
-        dd if=/dev/urandom of=\"\$PASS_DIR/chunk_\${chunk}.bin\" bs=1048576 count=\$this_chunk 2>/dev/null
+        if ! dd if=/dev/urandom of=\"\$PASS_DIR/chunk_\${chunk}.bin\" bs=1048576 count=\$this_chunk 2>&1; then
+            echo \"ERROR: dd write failed on pass \$pass chunk \$chunk\"
+            exit 1
+        fi
 
         written=\$((written + this_chunk))
 
