@@ -4,11 +4,15 @@
 # Dynamic storage detection, multi-pass full storage overwrite
 # Includes logging, progress tracking, and desktop notification
 #
-# Version: 2.2.0
+# Version: 2.3.0
 # Repository: https://github.com/OnlyParams/android-secure-wipe
 #
 # CHANGELOG:
 # ----------
+# v2.3.0 (2026-04-16)
+#   - SECURITY: Added device serial format validation (Fixes #10)
+#   - Rejects dangerous shell characters to prevent injection attacks
+#
 # v2.2.0 (2024-12-11)
 #   - Added input validation for --passes (must be 1-20)
 #   - Rejects non-numeric values with clear error messages
@@ -268,6 +272,15 @@ if [ -z "$DEVICE" ]; then
     echo "  RF12345ABC    device"
     echo ""
     echo "Then run: ./full_wipe.sh -d RF12345ABC"
+    exit 1
+fi
+
+# Validate device serial format (SECURITY: prevents shell injection via -d)
+if ! [[ "$DEVICE" =~ ^[a-zA-Z0-9:._-]+$ ]]; then
+    log "${RED}Error: Invalid device serial format: '$DEVICE'${NC}"
+    echo ""
+    echo "Device serial must contain only alphanumeric characters, colons, dots, underscores, or hyphens."
+    echo "Examples: RF12345ABC, emulator-5554, 192.168.1.100:5555"
     exit 1
 fi
 
