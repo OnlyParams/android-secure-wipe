@@ -9,6 +9,10 @@
 #
 # CHANGELOG:
 # ----------
+# v2.4.0 (2026-04-17)
+#   - SECURITY: Check dd exit codes instead of suppressing stderr (Fixes #11)
+#   - Wipe now aborts on write failure instead of silently continuing
+#
 # v2.3.0 (2026-04-16)
 #   - SECURITY: Added device serial format validation (Fixes #10)
 #   - Rejects dangerous shell characters to prevent injection attacks
@@ -325,7 +329,10 @@ for pass in \$(seq 1 \$PASSES); do
     FILENAME=\"\$WIPE_DIR/wipe_pass_\${pass}.bin\"
 
     echo \"Writing \${CHUNK_SIZE_MB}MB of random data...\"
-    dd if=/dev/urandom of=\"\$FILENAME\" bs=1048576 count=\$CHUNK_SIZE_MB 2>&1 | grep -v records || true
+    if ! dd if=/dev/urandom of=\"\$FILENAME\" bs=1048576 count=\$CHUNK_SIZE_MB 2>&1; then
+        echo \"ERROR: dd write failed on pass \$pass\"
+        exit 1
+    fi
 
     echo \"Syncing...\"
     sync
