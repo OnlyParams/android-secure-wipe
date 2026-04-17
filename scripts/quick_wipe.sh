@@ -4,11 +4,15 @@
 # 3 passes x 1GB chunks, ~15 minutes
 # Good for most trade-in scenarios
 #
-# Version: 2.2.0
+# Version: 2.3.0
 # Repository: https://github.com/OnlyParams/android-secure-wipe
 #
 # CHANGELOG:
 # ----------
+# v2.3.0 (2026-04-16)
+#   - SECURITY: Added device serial format validation (Fixes #10)
+#   - Rejects dangerous shell characters to prevent injection attacks
+#
 # v2.2.0 (2024-12-11)
 #   - Added input validation for --passes (must be 1-20) and --size (64-10240 MB)
 #   - Rejects non-numeric values with clear error messages
@@ -223,6 +227,15 @@ if [ -z "$DEVICE" ]; then
     echo "  RF12345ABC    device"
     echo ""
     echo "Then run: ./quick_wipe.sh -d RF12345ABC"
+    exit 1
+fi
+
+# Validate device serial format (SECURITY: prevents shell injection via -d)
+if ! [[ "$DEVICE" =~ ^[a-zA-Z0-9:._-]+$ ]]; then
+    echo -e "${RED}Error: Invalid device serial format: '$DEVICE'${NC}"
+    echo ""
+    echo "Device serial must contain only alphanumeric characters, colons, dots, underscores, or hyphens."
+    echo "Examples: RF12345ABC, emulator-5554, 192.168.1.100:5555"
     exit 1
 fi
 
